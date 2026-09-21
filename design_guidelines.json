@@ -1,0 +1,153 @@
+{
+  "project_name": "LPK Integrated Digital Management System (Japan Vocational Training ERP)",
+  "language": "Indonesian (id-ID)",
+  "app_type": "dashboard / saas_app",
+  "theme": "Light Theme, Professional, Japanese Nuance",
+  "typography": {
+    "heading_font": "Plus Jakarta Sans, sans-serif",
+    "body_font": "Inter, sans-serif",
+    "mono_font": "JetBrains Mono, monospace",
+    "font_imports": "@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap');",
+    "sizes": {
+      "h1": "text-2xl sm:text-3xl font-bold tracking-tight text-slate-900",
+      "h2": "text-xl sm:text-2xl font-semibold tracking-tight text-slate-900",
+      "h3": "text-lg font-semibold text-slate-900",
+      "h4": "text-base font-medium text-slate-800",
+      "body": "text-sm text-slate-600 leading-relaxed",
+      "caption": "text-xs font-medium text-slate-500 uppercase tracking-wider"
+    }
+  },
+  "colors": {
+    "mode": "light",
+    "background": {
+      "main": "#F8FAFC",
+      "card": "#FFFFFF",
+      "sidebar": "#0F172A",
+      "sidebar_accent": "#1E293B",
+      "muted": "#F1F5F9"
+    },
+    "primary": {
+      "DEFAULT": "#0F172A",
+      "foreground": "#FFFFFF",
+      "indigo": "#1E3A8A",
+      "japan_red": "#DC2626",
+      "japan_red_hover": "#B91C1C",
+      "japan_red_subtle": "#FEF2F2"
+    },
+    "secondary": {
+      "DEFAULT": "#F1F5F9",
+      "foreground": "#0F172A"
+    },
+    "status": {
+      "calon_siswa": "bg-slate-100 text-slate-700 border-slate-200",
+      "pendaftaran": "bg-blue-50 text-blue-700 border-blue-200",
+      "seleksi": "bg-purple-50 text-purple-700 border-purple-200",
+      "diterima": "bg-teal-50 text-teal-700 border-teal-200",
+      "pelatihan": "bg-amber-50 text-amber-700 border-amber-200",
+      "ujian": "bg-orange-50 text-orange-700 border-orange-200",
+      "lulus": "bg-emerald-50 text-emerald-700 border-emerald-200",
+      "matching": "bg-indigo-50 text-indigo-700 border-indigo-200",
+      "pemberkasan": "bg-cyan-50 text-cyan-700 border-cyan-200",
+      "visa": "bg-violet-50 text-violet-700 border-violet-200",
+      "berangkat": "bg-rose-50 text-rose-700 border-rose-200",
+      "alumni": "bg-slate-900 text-white border-slate-900"
+    },
+    "chart": {
+      "students": "#2563EB",
+      "income": "#16A34A",
+      "expenses": "#DC2626",
+      "visa_pass": "#0D9488",
+      "matching": "#8B5CF6"
+    },
+    "border": "#E2E8F0"
+  },
+  "japanese_nuance": {
+    "accents": "Subtle Crimson Accent lines (#DC2626), Clean Minimalist Spacing (Ma), Soft Asagi Indigo headers, Katakana/Kanji decorative badges (e.g., LPK 技能実習生管理システム / Integrated LPK System)",
+    "elements": [
+      "Discrete red dot icon accent (#DC2626) on hero badge & institute identity",
+      "High density clean tables with neat borders reminiscent of Japanese organizational precision",
+      "Status Pipeline stepper bar with clean chevron dividers",
+      "Printable official Kwitansi (Receipt) with Japanese-Indonesian LPK stamp aesthetics"
+    ]
+  },
+  "layout": {
+    "type": "Dashboard with Left Sidebar + Top Navbar",
+    "sidebar": "Collapsible desktop sidebar (260px expanded, 72px collapsed), fully drawer-based on mobile",
+    "header": "Sticky glassmorphism header with global search bar, role switcher dropdown, notifications popover, and current user avatar",
+    "grid_strategy": "High Density Dashboard Grid (Mode B): 4-column KPI row with trend indicators, 2:1 column main section split for charts vs recent activity/matching orders"
+  },
+  "key_features_and_modules": [
+    {
+      "module": "Auth",
+      "components": ["Login form with email/password, demo account preset buttons for each role (Owner, Admin, Keuangan, HR, Guru, Marketing, Staff)"]
+    },
+    {
+      "module": "Dashboard",
+      "components": ["KPI stats cards (Total Siswa Aktif, Siswa Lulus Matching, Total Kas/Bank, Pending Visa)", "Period Filter (Harian, Mingguan, Bulanan, Tahunan)", "Chart Siswa per Status", "Arus Kas Bulanan Chart", "Ringkasan Job Order Aktif"]
+    },
+    {
+      "module": "Siswa (Students)",
+      "components": ["Pipeline Filter Stepper", "DataTable with filtering, search, pagination", "Student Detail Profile Modal/Drawer with tabs: Biodata, Seleksi, Dokumen Checklist with status, Pembayaran & Tagihan, Absensi, Nilai Exam"]
+    },
+    {
+      "module": "Kelas & Jadwal (Classes & Schedule)",
+      "components": ["Class list cards with Sensei (Teacher) info", "Interactive Weekly Schedule grid", "Add/Edit Class Dialog"]
+    },
+    {
+      "module": "Absensi Siswa (Mobile Friendly)",
+      "components": ["Mobile-optimized quick attendance checker (Hadir, Izin, Sakit, Alpa)", "Date & Class selector", "Submit batch attendance"]
+    },
+    {
+      "module": "Nilai & Ujian (Grades & Exams)",
+      "components": ["Kanji/Kotoba/Choukai exam grade logging table", "Grade pass/fail thresholds indicator", "Student report card preview"]
+    },
+    {
+      "module": "Pembayaran Siswa (Student Payments)",
+      "components": ["Installment payment recording form", "Payment progress bar per student", "Printable/Downloadable Kwitansi (Receipt) modal with LPK seal style"]
+    },
+    {
+      "module": "Keuangan (Finance)",
+      "components": ["Cash & Bank Account summary cards", "Income & Expense transaction table with filter", "Bank Reconciliation checklist widget"]
+    },
+    {
+      "module": "Pegawai & Pengajar (Employees & Teachers)",
+      "components": ["Staff roster table with role tag (Sensei, Admin, Finance, HR)", "Class load assignment"]
+    },
+    {
+      "module": "Job Orders & Matching",
+      "components": ["Kumiai & Kaigo/Konstruksi/Manufaktur Job Orders", "Candidate matching drawer (Filter student by N4 JLPT/NAT status, physical height/weight, skill level)"]
+    },
+    {
+      "module": "Laporan & Audit Trail",
+      "components": ["Export to CSV/Print buttons", "Activity Audit Trail log list with timestamp and role"]
+    }
+  ],
+  "image_urls": {
+    "tokyo_skyline": "https://images.pexels.com/photos/15241876/pexels-photo-15241876.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+    "fuji_skyline": "https://images.pexels.com/photos/15275312/pexels-photo-15275312.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+    "classroom_training": "https://images.pexels.com/photos/33846555/pexels-photo-33846555.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+    "calligraphy_study": "https://images.pexels.com/photos/11395101/pexels-photo-11395101.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+    "student_avatar_male": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+    "student_avatar_female": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80"
+  },
+  "component_path": "/app/frontend/src/components/ui/",
+  "testing": {
+    "attribute": "data-testid",
+    "rule": "Every interactive button, menu item, input field, filter toggle, tab, and row link MUST include explicit data-testid in kebab-case."
+  },
+  "instructions_to_main_agent": [
+    "Ensure the UI uses Indonesian language for all terms (e.g., 'Calon Siswa', 'Pendaftaran', 'Kas & Bank', 'Kwitansi', 'Matching Job Order', 'Absensi Harian').",
+    "Implement full functionality with realistic seed data in React state or mock service so all tabs, filters, modals, role switches, and student pipeline steps work interactively.",
+    "Include a prominent Role Switcher in the top bar or header so the user can easily test as 'Owner', 'Admin', 'Keuangan', 'HR', 'Guru (Teacher)', 'Marketing', or 'Staff'.",
+    "Make the Absensi (Attendance) module extremely touch-friendly and responsive for mobile viewports, as teachers record attendance using smartphones.",
+    "Include printable Kwitansi (Payment Receipt) preview modal with printable layout styling.",
+    "Do NOT use pure transparent backgrounds on floating dropdowns or mobile navigation overlay. Always use bg-white/95 or backdrop-blur with solid fallback.",
+    "Ensure all interactive components have proper data-testid attributes for automated testing."
+  ],
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": {
+    "slop_prevention": "Avoid default generic centered card templates. Use structured Japanese minimalist grid layout, crisp 1px borders, subtle slate backgrounds, and clear high-density data presentation.",
+    "transitions": "Never use transition: all. Always specify transition-colors or transition-opacity.",
+    "typography_rules": "Use tight tracking on headers (tracking-tight), uppercase tracked labels for table subheaders.",
+    "toast_notifications": "Use sonner for notifications located in /app/frontend/src/components/ui/sonner.jsx"
+  }
+}
