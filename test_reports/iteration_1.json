@@ -1,0 +1,41 @@
+{
+  "summary": "Full backend + frontend test pass for LPK Jepang MVP. 40/40 pytest tests passed covering auth, RBAC, students CRUD + docs + status pipeline, payments + kwitansi + audit-reason, finance transactions + reconciliation + cashflow, academics (classes, attendance upsert, grades avg, guru scoping), job orders + candidate scoring, dashboard/reports/audit-logs/search/notifications. Frontend UI verified: login (demo + submit), dashboard stats, period filter, all sidebar nav testids present for owner, students list + add-dialog + navigate-to-detail + tabs + change-status-btn all rendered, payments/finance/audit page testids present, guru role correctly hides Pembayaran/Keuangan/SDM/Pengguna in sidebar. Object storage upload endpoint reachable (tests skip gracefully if storage init fails, actual test upload succeeded in one run).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/payments/{id} & PUT /api/finance/transactions/{id}", "issue": "Both use full PaymentIn/TransactionIn model requiring all fields on update; sending {nominal, alasan} alone yields 422 (Pydantic) instead of the intended 400 'Alasan wajib'. Consider a partial UpdateIn model or make fields Optional so the manual 400 error path is reachable with only alasan omitted."},
+      {"endpoint": "DELETE /api/payments/{id} & DELETE /api/finance/transactions/{id}", "issue": "Uses require_roles() with no positional args; only owner passes via the owner-bypass. Works but the intent (owner-only) would be clearer as require_roles('owner')."},
+      {"endpoint": "GET /api/students/{id}", "issue": "Backend returns flattened profile (status, status_history at top-level) not wrapped in {student: ...}. Consistent with list, but the frontend should verify it consumes the correct shape (verified via ProfileTabs)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_lpk_mvp.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Introduce partial-update Pydantic models for PUT /payments and PUT /finance/transactions so the 400 'Alasan wajib' path is reachable when only {nominal, alasan} is sent.",
+    "(Optional) Replace require_roles() with require_roles('owner') on delete-payment and delete-transaction endpoints for clarity."
+  ],
+  "critical_code_review_comments": [
+    "auth.py: login sets locked_until on every failed attempt but only blocks when count>=5 AND locked_until still in future; because locked_until is refreshed on every fail, an attacker triggering 5 fails is correctly locked for 15 min. However successful logins after lock expiry aren't re-attempted here — the attempt counter is deleted only on success, so a 6th attempt exactly at lock expiry would immediately re-lock. Consider resetting count when window expires.",
+    "core.py init_storage() uses a module global `storage_key` that is not thread-safe under asyncio (multiple concurrent uploads on cold start could race). Acceptable for MVP but worth an asyncio.Lock.",
+    "finance.py next_receipt_no() uses count_documents+1 as sequence, which is not atomic and can collide under concurrent create_payment. Prefer an atomic $inc on a counters collection or Mongo findOneAndUpdate upsert.",
+    "students.py enrich() calls compute_age & payment_summary_map inline; for large student lists (>2000) sorting/aggregation is fine but doc_progress/grade_average in get_student are sequential awaits. Ok for MVP.",
+    "server.py CORS uses allow_origins '*' with allow_credentials=True — Starlette will refuse to send cookies with wildcard; set explicit origins to actually make httpOnly cookies work cross-origin (currently the frontend relies on Bearer token, so functional, but the httpOnly cookie contract is effectively unused)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_lpk_mvp.py (new pytest suite, 40 tests)"
+  ],
+  "success_rate": {"backend": "100% (40/40)", "frontend": "100% smoke (all data-testid present, RBAC sidebar filtering works, add-student flow reaches detail page with all tabs)"},
+  "test_credentials": "owner@lpk.id/owner123, admin@lpk.id/password123, finance@lpk.id/password123, hr@lpk.id/password123, guru@lpk.id/password123, marketing@lpk.id/password123, staff@lpk.id/password123 (all working)",
+  "seed_data_creation": "Seed demo runs on backend startup (15 students, 2 classes, 3 accounts, seeded payments/expenses/job orders). Tests additionally created a few TEST_ prefixed students/payments/transactions/reconciliations; safe to leave for follow-up regression.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Regression suite is /app/backend/tests/test_lpk_mvp.py — run with: pytest backend/tests/test_lpk_mvp.py -v --junitxml=/app/test_reports/pytest/pytest_results.xml. UI smoke: use data-testid selectors listed in the review request; login pattern is demo-login-<role> then click login-submit-btn (demo button only fills the form). Student profile GET returns flattened fields (status/status_history at top level, no 'student' wrapper). Attendance recap returns a dict keyed by student_id. Job candidates returns {job, candidates}. Payment/Transaction PUT models are non-partial (send full body plus alasan).",
+  "rca of the issue": "N/A — all functional tests pass. Initial pytest failures were due to test payloads not matching Pydantic schemas (nama_lengkap vs nama, alamat dict vs string, komponen dict vs list, response shape mismatches); corrected in test file."
+}

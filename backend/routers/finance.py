@@ -151,7 +151,7 @@ async def update_transaction(tx_id: str, body: TransactionIn, user: dict = Depen
 
 
 @router.delete("/finance/transactions/{tx_id}")
-async def delete_transaction(tx_id: str, alasan: str = "", user: dict = Depends(require_roles())):
+async def delete_transaction(tx_id: str, alasan: str = "", user: dict = Depends(require_roles("owner"))):
     old = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
     if not old:
         raise HTTPException(status_code=404, detail="Transaksi tidak ditemukan")
@@ -201,8 +201,8 @@ async def cashflow(bulan: int = 6, user: dict = Depends(FIN_READ)):
 
 # ---------- Pembayaran Siswa ----------
 async def next_receipt_no() -> str:
-    n = await db.payments.count_documents({}) + 1
-    return f"KW-{date.today().strftime('%Y%m')}-{n:04d}"
+    c = await db.counters.find_one_and_update({"_id": "kwitansi"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True)
+    return f"KW-{date.today().strftime('%Y%m')}-{c['seq']:04d}"
 
 
 @router.get("/payments")
@@ -260,7 +260,7 @@ async def update_payment(pay_id: str, body: PaymentIn, user: dict = Depends(FIN)
 
 
 @router.delete("/payments/{pay_id}")
-async def delete_payment(pay_id: str, alasan: str = "", user: dict = Depends(require_roles())):
+async def delete_payment(pay_id: str, alasan: str = "", user: dict = Depends(require_roles("owner"))):
     old = await db.payments.find_one({"id": pay_id}, {"_id": 0})
     if not old:
         raise HTTPException(status_code=404, detail="Pembayaran tidak ditemukan")
