@@ -35,7 +35,7 @@ export default function StudentsPage() {
   return (
     <div>
       <PageHeader title="Data Siswa" jp="生徒データ" subtitle="Satu profil siswa untuk seleksi, kelas, pembayaran, dokumen, dan job order.">
-        <button className="btn-outline" onClick={() => downloadCSV(rows.map((s) => ({ nama: s.nama_lengkap, nik: s.nik, status: STATUS_LABELS[s.status], kelas: s.kelas_nama, total: s.pembayaran.total, bayar: s.pembayaran.bayar, sisa: s.pembayaran.sisa, hp: s.no_hp })), "siswa.csv")} data-testid="export-students-btn"><Download size={16} />Ekspor</button>
+        <button className="btn-outline" onClick={() => downloadCSV(rows.map((s) => ({ nama: s.nama_lengkap, nik: s.nik, status: STATUS_LABELS[s.status], kelas: s.kelas_nama, total: s.pembayaran?.total ?? "-", bayar: s.pembayaran?.bayar ?? "-", sisa: s.pembayaran?.sisa ?? "-", hp: s.no_hp, sumber: s.sumber_prospek || "-", pemilik: s.pemilik_lead || "-" })), "siswa.csv")} data-testid="export-students-btn"><Download size={16} />Ekspor</button>
         {can("siswa_write") && <button className="btn-red" onClick={() => setOpen(true)} data-testid="add-student-btn"><Plus size={16} />Daftarkan Calon Siswa</button>}
       </PageHeader>
 
@@ -53,7 +53,7 @@ export default function StudentsPage() {
       {loading && !data ? <Loading /> : rows.length === 0 ? <div className="card"><EmptyState text="Tidak ada siswa pada filter ini" testId="students-empty" /></div> : (
         <div className="table-wrap fade-up">
           <table className="tbl" data-testid="students-table">
-            <thead><tr><th>Nama</th><th>Status</th><th>Kelas</th><th>Usia / JK</th><th>Bahasa</th><th>Pembayaran</th><th>Kontak</th></tr></thead>
+            <thead><tr><th>Nama</th><th>Status</th><th>Kelas</th><th>Usia / JK</th><th>Bahasa</th><th>Pembayaran</th><th>Sumber</th><th>Kontak</th></tr></thead>
             <tbody>
               {rows.map((s) => (
                 <tr key={s.id} data-testid={`student-row-${s.id}`} className="cursor-pointer" onClick={() => nav(`/siswa/${s.id}`)}>
@@ -63,9 +63,12 @@ export default function StudentsPage() {
                   <td>{s.usia ?? "-"} th · {s.jenis_kelamin}</td>
                   <td><span className="chip bg-slate-50 border-slate-200 text-slate-700">{s.kemampuan_bahasa_jepang || "-"}</span></td>
                   <td className="min-w-[180px]">
-                    <div className="flex justify-between text-xs mb-1"><span className="mono">{rupiah(s.pembayaran.bayar)}</span><span className={`mono ${s.pembayaran.sisa > 0 ? "text-red-600" : "text-emerald-600"}`}>{s.pembayaran.sisa > 0 ? `sisa ${rupiah(s.pembayaran.sisa)}` : "Lunas"}</span></div>
-                    <Progress value={s.pembayaran.total ? (s.pembayaran.bayar / s.pembayaran.total) * 100 : 0} tone={s.pembayaran.sisa > 0 ? "bg-amber-500" : "bg-emerald-500"} />
+                    {s.pembayaran ? (<>
+                      <div className="flex justify-between text-xs mb-1"><span className="mono">{rupiah(s.pembayaran.bayar)}</span><span className={`mono ${s.pembayaran.sisa > 0 ? "text-red-600" : "text-emerald-600"}`}>{s.pembayaran.sisa > 0 ? `sisa ${rupiah(s.pembayaran.sisa)}` : "Lunas"}</span></div>
+                      <Progress value={s.pembayaran.total ? (s.pembayaran.bayar / s.pembayaran.total) * 100 : 0} tone={s.pembayaran.sisa > 0 ? "bg-amber-500" : "bg-emerald-500"} />
+                    </>) : <span className="text-slate-400 text-xs">-</span>}
                   </td>
+                  <td className="text-xs text-slate-500">{s.sumber_prospek || <span className="text-slate-400">-</span>}{s.pemilik_lead ? <><br />{s.pemilik_lead}</> : null}</td>
                   <td className="text-xs text-slate-500">{s.no_hp}<br />{s.alamat?.kabupaten}</td>
                 </tr>
               ))}

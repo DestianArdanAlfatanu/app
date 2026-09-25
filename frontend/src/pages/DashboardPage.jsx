@@ -17,7 +17,7 @@ export default function DashboardPage() {
   const { data: cash } = useApi("/finance/cashflow?bulan=6", [], can("keuangan"));
 
   if (loading && !data) return <Loading />;
-  const s = data.siswa, k = data.keuangan, o = data.operasional;
+  const s = data.siswa, k = data.keuangan, o = data.operasional, p = data.pending || {};
   const statusData = STATUS_ORDER.filter((x) => x !== "gagal").map((x) => ({ name: STATUS_LABELS[x].split(" ")[0], jumlah: s.per_status[x] || 0 }));
 
   return (
@@ -50,12 +50,31 @@ export default function DashboardPage() {
         </>
       )}
 
-      <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Operasional</p>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Operasional</p>      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <StatCard testId="stat-guru" label="Guru / Karyawan" value={`${o.guru} / ${o.karyawan}`} icon={Users} />
         <StatCard testId="stat-kelas" label="Kelas Aktif" value={o.kelas_aktif} hint={`${o.jadwal_hari_ini.length} sesi hari ini`} icon={BookOpen} tone="indigo" onClick={() => nav("/kelas")} />
         <StatCard testId="stat-ujian" label="Siswa Akan Ujian" value={o.siswa_akan_ujian} hint={o.ujian_mendatang[0] ? `${o.ujian_mendatang[0].nama} · ${o.ujian_mendatang[0].tanggal}` : "Tidak ada ujian 14 hari ke depan"} icon={CalendarClock} tone="amber" />
         <StatCard testId="stat-joborder" label="Job Order Terbuka" value={o.job_order_terbuka} hint={`${o.interview_mendatang.length} interview mendatang · ${data.absensi_hari_ini.tidak_hadir} siswa absen hari ini`} icon={Briefcase} tone="red" onClick={() => nav("/job-order")} />
+      </div>
+
+      {(p.expense || p.leave || p.payroll) && (
+        <>
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Menunggu Persetujuan</p>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            {p.expense && <StatCard testId="stat-pending-expense" label="Pengajuan Biaya" value={p.expense.count} hint={p.expense.count ? `Total ${rupiah(p.expense.total)}` : "Tidak ada pengajuan menunggu"} icon={AlertCircle} tone="amber" onClick={() => nav("/pengajuan")} />}
+            {p.leave && <StatCard testId="stat-pending-leave" label="Pengajuan Cuti" value={p.leave.count} hint={p.leave.count ? "Perlu keputusan" : "Tidak ada cuti menunggu"} icon={CalendarClock} tone="amber" onClick={() => nav("/sdm")} />}
+            {p.payroll && <StatCard testId="stat-pending-payroll" label="Payroll Draft" value={p.payroll.count} hint={p.payroll.count ? `Total bersih ${rupiah(p.payroll.total)}` : "Tidak ada draft"} icon={Landmark} tone="blue" onClick={() => nav("/sdm")} />}
+          </div>
+        </>
+      )}
+
+      <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Aksi Cepat</p>
+      <div className="flex flex-wrap gap-2 mb-8">
+        {can("expense_write") && <button className="btn-outline btn-sm" onClick={() => nav("/pengajuan")} data-testid="quick-expense">+ Pengajuan Biaya</button>}
+        {can("payroll_write") && <button className="btn-outline btn-sm" onClick={() => nav("/sdm")} data-testid="quick-payroll">+ Payroll / Cuti</button>}
+        {can("pembayaran_write") && <button className="btn-outline btn-sm" onClick={() => nav("/pembayaran")} data-testid="quick-payment">+ Pembayaran</button>}
+        {can("siswa_write") && <button className="btn-outline btn-sm" onClick={() => nav("/siswa")} data-testid="quick-student">+ Calon Siswa</button>}
+        {can("laporan") && <button className="btn-outline btn-sm" onClick={() => nav("/laporan")} data-testid="quick-report">Lihat Laporan</button>}
       </div>
 
       <div className="grid lg:grid-cols-3 gap-4">

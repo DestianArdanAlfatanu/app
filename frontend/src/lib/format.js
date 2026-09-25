@@ -33,7 +33,7 @@ export const STATUS_CLASSES = {
   gagal: "bg-red-50 text-red-700 border-red-200",
 };
 
-export const ROLE_LABELS = { owner: "Owner", admin: "Admin", finance: "Keuangan", hr: "HR", guru: "Guru", marketing: "Marketing", staff: "Staff" };
+export const ROLE_LABELS = { owner: "Owner", admin: "Admin", finance: "Keuangan", hr: "HR", guru: "Guru", marketing: "Marketing", staff: "Staff", student: "Siswa" };
 
 export const ATT_LABELS = { hadir: "Hadir", izin: "Izin", sakit: "Sakit", alfa: "Alfa" };
 

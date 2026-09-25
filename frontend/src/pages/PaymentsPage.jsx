@@ -8,6 +8,7 @@ import { api, errMsg } from "@/lib/api";
 import { PageHeader, StatCard, Loading, Tabs, EmptyState, Money, FormDialog, Field } from "@/components/common";
 import { PaymentDialog } from "@/components/PaymentDialog";
 import { ReceiptDialog } from "@/components/ReceiptDialog";
+import { CollectionActions, OUTCOME_LABELS } from "@/components/CollectionDialogs";
 import { rupiah, fmtDate, METODE, STATUS_LABELS } from "@/lib/format";
 
 const KONDISI = { terlambat: ["Terlambat", "bg-red-50 text-red-700 border-red-200"], hari_ini: ["Jatuh tempo hari ini", "bg-amber-50 text-amber-700 border-amber-200"], akan_jatuh_tempo: ["Akan jatuh tempo", "bg-blue-50 text-blue-700 border-blue-200"], belum_jatuh_tempo: ["Belum ada tanggal", "bg-slate-50 text-slate-600 border-slate-200"] };
@@ -20,6 +21,8 @@ export default function PaymentsPage() {
   const { data: payments, loading, reload } = useApi("/payments");
   const { data: arrears, reload: reloadArrears } = useApi(`/payments-arrears${filter ? `?filter=${filter}` : ""}`);
   const { data: students } = useApi("/students");
+  const { data: colMap, reload: reloadCol } = useApi("/collections/summary-map");
+  const { data: colOverview, reload: reloadOverview } = useApi("/collections/overview");
   const [open, setOpen] = useState(false);
   const [receipt, setReceipt] = useState(null);
   const [edit, setEdit] = useState(null);
@@ -29,9 +32,11 @@ export default function PaymentsPage() {
   const totalHariIni = (payments || []).filter((p) => p.tanggal === new Date().toISOString().slice(0, 10)).reduce((a, p) => a + p.nominal, 0);
   const totalTunggakan = (arrears || []).reduce((a, s) => a + s.sisa, 0);
 
+  const refreshed = () => { reload(); reloadArrears(); reloadCol(); reloadOverview(); };
+
   const saveEdit = async () => {
     if (!edit.alasan) return toast.error("Alasan perubahan wajib diisi (audit)");
-    try { await api.put(`/payments/${edit.id}`, { ...edit, nominal: Number(edit.nominal) }); toast.success("Pembayaran diperbarui & tercatat di audit"); setEdit(null); reload(); reloadArrears(); }
+    try { await api.put(`/payments/${edit.id}`, { ...edit, nominal: Number(edit.nominal) }); toast.success("Pembayaran diperbarui & tercatat di audit"); setEdit(null); refreshed(); }
     catch (e) { toast.error(errMsg(e)); }
   };
 
@@ -59,13 +64,24 @@ export default function PaymentsPage() {
       </>)}
 
       {tab === "tunggakan" && (<>
+        {can("pembayaran_write") && colOverview && ((colOverview.overdue?.length || 0) + (colOverview.due_today?.length || 0) > 0) && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 mb-4 text-sm" data-testid="collection-followup-strip">
+            <span className="font-medium">Follow-up: </span>
+            {colOverview.overdue?.length > 0 && <span className="text-red-700 font-medium">{colOverview.overdue.length} overdue</span>}
+            {colOverview.overdue?.length > 0 && colOverview.due_today?.length > 0 && <span> · </span>}
+            {colOverview.due_today?.length > 0 && <span className="text-amber-700 font-medium">{colOverview.due_today.length} jatuh tempo hari ini</span>}
+            {colOverview.never_contacted?.length > 0 && <span className="text-slate-600"> · {colOverview.never_contacted.length} belum pernah dihubungi</span>}
+          </div>)}
         <div className="flex gap-1.5 mb-4 flex-wrap" data-testid="arrears-filter">
           {[["", "Semua"], ["terlambat", "Terlambat"], ["hari_ini", "Jatuh tempo hari ini"], ["akan_jatuh_tempo", "Akan jatuh tempo"]].map(([k, l]) => <button key={k} onClick={() => setFilter(k)} data-testid={`arrears-filter-${k || "all"}`} className={`chip cursor-pointer ${filter === k ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600"}`}>{l}</button>)}
         </div>
-        <div className="table-wrap fade-up"><table className="tbl" data-testid="arrears-table"><thead><tr><th>Siswa</th><th>Status</th><th>Total</th><th>Dibayar</th><th>Sisa</th><th>Jatuh Tempo</th><th>Kondisi</th><th>Pembayaran Terakhir</th><th>Kontak</th></tr></thead>
-          <tbody>{(arrears || []).length === 0 && <tr><td colSpan={9}><EmptyState text="Tidak ada tunggakan" /></td></tr>}
-            {(arrears || []).map((s) => <tr key={s.id}><td><Link to={`/siswa/${s.id}`} className="font-medium hover:text-red-600">{s.nama_lengkap}</Link></td><td className="text-xs">{STATUS_LABELS[s.status]}</td><td><Money value={s.total} /></td><td><Money value={s.bayar} className="text-emerald-700" /></td><td><Money value={s.sisa} className="text-red-600 font-semibold" /></td><td>{fmtDate(s.jatuh_tempo)}</td>
-              <td><span className={`chip ${KONDISI[s.kondisi][1]}`}>{KONDISI[s.kondisi][0]}</span></td><td>{fmtDate(s.terakhir)}</td><td className="text-xs">{s.no_hp}</td></tr>)}
+        <div className="table-wrap fade-up"><table className="tbl" data-testid="arrears-table"><thead><tr><th>Siswa</th><th>Status</th><th>Total</th><th>Dibayar</th><th>Sisa</th><th>Jatuh Tempo</th><th>Kondisi</th><th>Pembayaran Terakhir</th><th>Kontak</th><th>Penagihan Terakhir</th><th>Next Follow-up</th><th></th></tr></thead>
+          <tbody>{(arrears || []).length === 0 && <tr><td colSpan={12}><EmptyState text="Tidak ada tunggakan" /></td></tr>}
+            {(arrears || []).map((s) => { const cm = (colMap || {})[s.id]; return (<tr key={s.id}><td><Link to={`/siswa/${s.id}`} className="font-medium hover:text-red-600">{s.nama_lengkap}</Link></td><td className="text-xs">{STATUS_LABELS[s.status]}</td><td><Money value={s.total} /></td><td><Money value={s.bayar} className="text-emerald-700" /></td><td><Money value={s.sisa} className="text-red-600 font-semibold" /></td><td>{fmtDate(s.jatuh_tempo)}</td>
+              <td><span className={`chip ${KONDISI[s.kondisi][1]}`}>{KONDISI[s.kondisi][0]}</span></td><td>{fmtDate(s.terakhir)}</td><td className="text-xs">{s.no_hp}</td>
+              <td className="text-xs">{cm ? <>{fmtDate(cm.last_at?.slice(0, 10))} · {OUTCOME_LABELS[cm.last_outcome] || cm.last_outcome}</> : <span className="text-slate-400">Belum dihubungi</span>}</td>
+              <td className="text-xs">{cm?.next_follow_up_at ? fmtDate(cm.next_follow_up_at) : "-"}</td>
+              <td>{can("pembayaran_write") && <CollectionActions student={s} onChanged={refreshed} />}</td></tr>); })}
           </tbody></table></div>
       </>)}
 

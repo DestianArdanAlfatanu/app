@@ -77,7 +77,7 @@ export default function FinancePage() {
             <tbody>{(txs || []).length === 0 && <tr><td colSpan={9}><EmptyState /></td></tr>}
               {(txs || []).map((t) => <tr key={t.id} data-testid={`tx-row-${t.id}`}><td>{fmtDate(t.tanggal)}</td><td><span className={`chip ${t.jenis === "pemasukan" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-red-50 text-red-700 border-red-200"}`}>{t.jenis}</span></td><td>{t.kategori}</td><td className="max-w-xs truncate">{t.deskripsi}{t.bukti_file_id && <a href={fileUrl(t.bukti_file_id)} target="_blank" rel="noreferrer" className="ml-2 text-xs text-red-600 font-semibold">bukti</a>}</td><td>{t.account_nama}</td><td className="capitalize">{t.metode}</td>
                 <td><Money value={t.nominal} className={`font-semibold ${t.jenis === "pemasukan" ? "text-emerald-700" : "text-red-600"}`} /></td><td className="text-xs">{t.petugas}</td>
-                <td>{can("keuangan_write") && t.ref_type !== "payment" && <button className="btn-ghost btn-sm" onClick={() => { setEditTx(t); setTx({ ...EMPTY_TX, ...t, bukti: null, alasan: "" }); setTxOpen(true); }} data-testid={`edit-tx-${t.id}`}><Pencil size={13} /></button>}</td></tr>)}
+                <td>{can("keuangan_write") && (t.ref_type === "manual" || !t.ref_type) && <button className="btn-ghost btn-sm" onClick={() => { setEditTx(t); setTx({ ...EMPTY_TX, ...t, bukti: null, alasan: "" }); setTxOpen(true); }} data-testid={`edit-tx-${t.id}`}><Pencil size={13} /></button>}</td></tr>)}
             </tbody></table></div>)}
       </>)}
 

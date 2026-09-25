@@ -1,0 +1,14 @@
+Traceback (most recent call last):
+  File "D:\laragon\www\app\backend\seed_demo_data.py", line 747, in <module>
+    fn()
+  File "D:\laragon\www\app\backend\seed_demo_data.py", line 393, in phase_attendance
+    api("POST", "/attendance", "admin", {"class_id": c["id"], "tanggal": day.isoformat(), "records": recs})
+  File "D:\laragon\www\app\backend\seed_demo_data.py", line 56, in api
+    assert last.status_code in expect, (
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: SEED FAILED
+phase: accounts
+entity: 
+endpoint: POST /attendance
+status: 400
+error: {"detail":"Status absensi tidak valid"}

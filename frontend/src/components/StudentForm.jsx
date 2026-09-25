@@ -4,8 +4,10 @@ import { Field } from "@/components/common";
 export const EMPTY_STUDENT = {
   nama_lengkap: "", nik: "", no_kk: "", tempat_lahir: "", tanggal_lahir: "", jenis_kelamin: "L",
   alamat: { desa: "", kecamatan: "", kabupaten: "", provinsi: "" }, no_hp: "", email: "", nama_orang_tua: "", no_hp_orang_tua: "",
+  wa_student_opt_in: false, wa_guardian_opt_in: false,
   pendidikan_terakhir: "SMA", nama_sekolah: "", jurusan: "", tahun_lulus: "", tinggi_badan: "", berat_badan: "",
   status_pernikahan: "belum_menikah", riwayat_pekerjaan: "", riwayat_kesehatan: "", kemampuan_bahasa_jepang: "-", status: "calon_siswa", jatuh_tempo: "", catatan: "",
+  sumber_prospek: "", pemilik_lead: "",
 };
 
 export function normalizeStudent(f) {
@@ -33,8 +35,13 @@ export const StudentForm = ({ form, setForm }) => {
           <Field label="Jenis Kelamin"><select data-testid="student-jk-select" className="input" value={form.jenis_kelamin} onChange={set("jenis_kelamin")}><option value="L">Laki-laki</option><option value="P">Perempuan</option></select></Field>
           <Field label="Nomor HP"><input data-testid="student-hp-input" className="input" value={form.no_hp} onChange={set("no_hp")} /></Field>
           <Field label="Email"><input type="email" className="input" value={form.email} onChange={set("email")} /></Field>
+          <Field label="Sumber Prospek"><select data-testid="student-sumber-select" className="input" value={form.sumber_prospek || ""} onChange={set("sumber_prospek")}><option value="">— Pilih —</option>{["referral", "sosmed", "iklan", "sekolah", "kunjungan", "lainnya"].map((x) => <option key={x} value={x}>{x}</option>)}</select></Field>
+          <Field label="Pemilik Lead"><input data-testid="student-pemilik-input" className="input" value={form.pemilik_lead || ""} onChange={set("pemilik_lead")} placeholder="mis. Marketing A" /></Field>
           <Field label="Nama Orang Tua"><input className="input" value={form.nama_orang_tua} onChange={set("nama_orang_tua")} /></Field>
           <Field label="No. HP Orang Tua"><input className="input" value={form.no_hp_orang_tua} onChange={set("no_hp_orang_tua")} /></Field>
+          <label className="flex items-center gap-2 text-sm sm:col-span-1"><input type="checkbox" data-testid="student-wa-siswa" checked={!!form.wa_student_opt_in} onChange={(e) => setForm({ ...form, wa_student_opt_in: e.target.checked })} />WA siswa boleh dihubungi</label>
+          <Field label="No. WA Wali (otomatis dari HP ortu bila kosong)"><input className="input mono" value={form.wa_guardian_phone || ""} placeholder="628..." onChange={(e) => setForm({ ...form, wa_guardian_phone: e.target.value })} /></Field>
+          <label className="flex items-center gap-2 text-sm sm:col-span-1"><input type="checkbox" data-testid="student-wa-wali" checked={!!form.wa_guardian_opt_in} onChange={(e) => setForm({ ...form, wa_guardian_opt_in: e.target.checked })} />WA wali boleh dihubungi</label>
           <Field label="Desa"><input className="input" value={form.alamat?.desa || ""} onChange={setA("desa")} /></Field>
           <Field label="Kecamatan"><input className="input" value={form.alamat?.kecamatan || ""} onChange={setA("kecamatan")} /></Field>
           <Field label="Kabupaten"><input className="input" value={form.alamat?.kabupaten || ""} onChange={setA("kabupaten")} /></Field>

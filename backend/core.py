@@ -139,6 +139,13 @@ def require_roles(*roles):
     return dep
 
 
+def deny_student(user: dict) -> dict:
+    """Tolak role student pada endpoint internal. Aditif; perilaku staff tidak berubah."""
+    if user.get("role") == "student":
+        raise HTTPException(status_code=403, detail="Akses ditolak")
+    return user
+
+
 # ---------- Audit ----------
 async def log_audit(entity: str, entity_id: str, action: str, user: dict, before=None, after=None, alasan: str = ""):
     await db.audit_logs.insert_one({
@@ -184,17 +191,43 @@ def get_object(path: str):
     return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
 
-async def save_upload(file, user: dict, folder: str) -> dict:
-    ext = file.filename.split(".")[-1].lower() if "." in file.filename else "bin"
+async def save_upload(file, user: dict, folder: str, allowed_exts=None, scope: str = None) -> dict:
+    """Simpan file upload ke LocalDocumentStorage milik server (lihat document_storage.py).
+
+    Bukan silent fallback: ini implementasi storage terpilih, eksplisit menggantikan
+    object storage eksternal. Validasi tipe/ukuran lebih dulu; file ditulis atomic
+    (tmp + rename) sebelum metadata dibuat sehingga tidak ada metadata palsu.
+    """
+    from document_storage import storage, extension_of, EXT_CONTENT_TYPES, MAX_UPLOAD_SIZE, sanitize_component
+    ext = extension_of(file.filename)
+    if allowed_exts is not None and ext not in allowed_exts:
+        raise HTTPException(status_code=400,
+                            detail=f"Format file tidak didukung (. {ext or 'tanpa ekstensi'}). Gunakan: {', '.join(sorted(allowed_exts))}")
     data = await file.read()
-    if len(data) > 10 * 1024 * 1024:
+    if not data:
+        raise HTTPException(status_code=400, detail="File kosong")
+    if len(data) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=400, detail="Ukuran file maksimal 10MB")
-    path = f"{APP_NAME}/{folder}/{user['id']}/{uuid.uuid4()}.{ext}"
-    result = put_object(path, data, file.content_type or "application/octet-stream")
-    rec = {"id": new_id(), "storage_path": result["path"], "original_filename": file.filename,
-           "content_type": file.content_type or "application/octet-stream", "size": result.get("size", len(data)),
+    content_type = EXT_CONTENT_TYPES.get(ext) or file.content_type or "application/octet-stream"
+    file_id = new_id()
+    owner = sanitize_component(scope or user["id"])
+    key = f"{sanitize_component(folder)}/{owner}/{file_id}.{ext}"
+    try:
+        size = storage.save(key, data)
+    except Exception as e:
+        logger.error(f"Gagal menyimpan file lokal: {e}")
+        raise HTTPException(status_code=502, detail="Upload gagal: file tidak dapat disimpan di server")
+    rec = {"id": file_id, "storage_path": key, "original_filename": file.filename,
+           "content_type": content_type, "size": size,
            "is_deleted": False, "uploaded_by": user["name"], "created_at": now_iso()}
-    await db.files.insert_one(rec)
+    try:
+        await db.files.insert_one(rec)
+    except Exception:
+        try:
+            storage.delete(key)
+        except Exception:
+            pass
+        raise HTTPException(status_code=502, detail="Upload gagal: metadata tidak dapat disimpan")
     return clean(rec)
 
 
@@ -229,5 +262,5 @@ async def grade_average(student_id: str):
 
 async def doc_progress(student_id: str) -> dict:
     docs = await db.documents.find({"student_id": student_id, "is_deleted": False}, {"_id": 0, "jenis": 1, "status": 1}).to_list(100)
-    ada = {d["jenis"] for d in docs if d.get("status") == "tersedia"}
+    ada = {d["jenis"] for d in docs if d.get("status") in ("tersedia", "verified")}
     return {"lengkap": len(ada), "total": len(DOC_TYPES)}

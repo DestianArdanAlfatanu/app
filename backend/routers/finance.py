@@ -5,13 +5,28 @@ from pydantic import BaseModel
 
 from core import (db, require_roles, new_id, now_iso, today_str, clean, log_audit, period_range,
                   payment_summary_map, fee_total)
+from pymongo.errors import DuplicateKeyError
 
 router = APIRouter()
 FIN = require_roles("finance")
 FIN_READ = require_roles("finance", "admin")
+EXP_READ = require_roles("finance", "admin", "staff", "marketing")
+EXP_WRITE = require_roles("finance", "staff", "marketing")
+EXP_APPROVE = require_roles("finance")
+EXP_PAY = require_roles("finance")
 INCOME_CATS = ["Pembayaran Siswa", "Pendaftaran", "Pelatihan", "Asrama", "Administrasi", "Pendapatan Lainnya"]
 EXPENSE_CATS = ["Gaji", "Honor Guru", "Listrik", "Internet", "Air", "Sewa Gedung", "Makan Siswa", "Transportasi", "ATK",
                 "Perawatan", "Pajak", "Operasional Lainnya"]
+LINKED_TYPES = ("payment", "payroll", "expense")
+# BDN-01: nominal >= threshold wajib Owner; di bawah threshold Finance boleh approve.
+EXPENSE_OWNER_THRESHOLD = 1000000
+EXPENSE_STATUSES = ["draft", "diajukan", "disetujui", "ditolak", "dibayar", "dibatalkan"]
+
+
+def _check_kategori(jenis: str, kategori: str):
+    allowed = INCOME_CATS if jenis == "pemasukan" else EXPENSE_CATS
+    if kategori not in allowed:
+        raise HTTPException(status_code=400, detail=f"Kategori tidak valid untuk {jenis}")
 
 
 class AccountIn(BaseModel):
@@ -45,6 +60,7 @@ class PaymentIn(BaseModel):
     catatan: Optional[str] = ""
     bukti_file_id: Optional[str] = None
     alasan: Optional[str] = ""
+    idem_key: Optional[str] = ""
 
 
 class ReconIn(BaseModel):
@@ -123,6 +139,7 @@ async def list_transactions(jenis: Optional[str] = None, kategori: Optional[str]
 async def create_transaction(body: TransactionIn, user: dict = Depends(FIN)):
     if body.jenis not in ("pemasukan", "pengeluaran"):
         raise HTTPException(status_code=400, detail="Jenis transaksi tidak valid")
+    _check_kategori(body.jenis, body.kategori)
     if body.nominal <= 0:
         raise HTTPException(status_code=400, detail="Nominal harus lebih dari 0")
     if not await db.accounts.find_one({"id": body.account_id}):
@@ -139,10 +156,11 @@ async def update_transaction(tx_id: str, body: TransactionIn, user: dict = Depen
     old = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
     if not old:
         raise HTTPException(status_code=404, detail="Transaksi tidak ditemukan")
-    if old.get("ref_type") == "payment":
-        raise HTTPException(status_code=400, detail="Transaksi pembayaran siswa harus diubah dari modul Pembayaran")
+    if old.get("ref_type") in LINKED_TYPES:
+        raise HTTPException(status_code=400, detail="Transaksi tertaut (payment/payroll/expense) tidak dapat diubah manual. Gunakan modul asalnya.")
     if not body.alasan:
         raise HTTPException(status_code=400, detail="Alasan perubahan wajib diisi")
+    _check_kategori(body.jenis, body.kategori)
     upd = body.model_dump(exclude={"alasan"})
     await db.transactions.update_one({"id": tx_id}, {"$set": upd})
     await log_audit("transaction", tx_id, "update", user, {"nominal": old["nominal"], "kategori": old["kategori"]},
@@ -155,8 +173,8 @@ async def delete_transaction(tx_id: str, alasan: str = "", user: dict = Depends(
     old = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
     if not old:
         raise HTTPException(status_code=404, detail="Transaksi tidak ditemukan")
-    if old.get("ref_type") == "payment":
-        raise HTTPException(status_code=400, detail="Hapus melalui modul Pembayaran")
+    if old.get("ref_type") in LINKED_TYPES:
+        raise HTTPException(status_code=400, detail="Transaksi tertaut (payment/payroll/expense) tidak dapat dihapus manual. Gunakan modul asalnya.")
     await db.transactions.delete_one({"id": tx_id})
     await log_audit("transaction", tx_id, "delete", user, {"nominal": old["nominal"], "kategori": old["kategori"]}, None, alasan)
     return {"ok": True}
@@ -219,6 +237,10 @@ async def list_payments(student_id: Optional[str] = None, dari: Optional[str] = 
 
 @router.post("/payments")
 async def create_payment(body: PaymentIn, user: dict = Depends(FIN)):
+    if body.idem_key:
+        dup = await db.payments.find_one({"idem_key": body.idem_key}, {"_id": 0})
+        if dup:
+            return await _resolve_duplicate_payment(dup, user)
     s = await db.students.find_one({"id": body.student_id}, {"_id": 0})
     if not s:
         raise HTTPException(status_code=404, detail="Siswa tidak ditemukan")
@@ -233,13 +255,49 @@ async def create_payment(body: PaymentIn, user: dict = Depends(FIN)):
     doc = {**body.model_dump(exclude={"alasan"}), "id": new_id(), "no_kwitansi": await next_receipt_no(),
            "student_nama": s["nama_lengkap"], "account_nama": acc["nama"], "petugas": user["name"],
            "sisa_setelah": max(total - sudah - body.nominal, 0), "created_at": now_iso()}
-    await db.payments.insert_one(doc)
-    await db.transactions.insert_one({"id": new_id(), "jenis": "pemasukan", "kategori": "Pembayaran Siswa", "nominal": body.nominal,
-                                      "tanggal": body.tanggal, "deskripsi": f"Pembayaran {body.jenis} - {s['nama_lengkap']} ({doc['no_kwitansi']})",
-                                      "account_id": body.account_id, "metode": body.metode, "bukti_file_id": body.bukti_file_id,
-                                      "ref_type": "payment", "ref_id": doc["id"], "petugas": user["name"], "created_at": now_iso()})
+    if not doc.get("idem_key"):
+        doc.pop("idem_key", None)
+    try:
+        await db.payments.insert_one(doc)
+    except DuplicateKeyError:
+        dup = await db.payments.find_one({"idem_key": body.idem_key}, {"_id": 0}) if body.idem_key else None
+        if dup:
+            return await _resolve_duplicate_payment(dup, user)
+        raise
+    await db.transactions.insert_one(_payment_tx(doc, s))
     await log_audit("payment", doc["id"], "create", user, None, {"student": s["nama_lengkap"], "nominal": body.nominal, "no_kwitansi": doc["no_kwitansi"]})
+    try:
+        from routers.whatsapp import dispatch_event
+        await dispatch_event("payment_received", s["id"], f"pay:{doc['id']}",
+                             {"nama": s["nama_lengkap"],
+                              "jumlah": f"Rp{body.nominal:,.0f}".replace(",", "."),
+                              "tanggal": body.tanggal, "nomor_kwitansi": doc["no_kwitansi"]},
+                             ["siswa", "wali"])
+    except Exception as ex:
+        from core import logger as _logger
+        _logger.error(f"WA payment_received gagal: {ex}")
     return clean(doc)
+
+
+def _payment_tx(doc: dict, s: dict) -> dict:
+    return {"id": new_id(), "jenis": "pemasukan", "kategori": "Pembayaran Siswa", "nominal": doc["nominal"],
+            "tanggal": doc["tanggal"], "deskripsi": f"Pembayaran {doc.get('jenis')} - {s['nama_lengkap']} ({doc['no_kwitansi']})",
+            "account_id": doc["account_id"], "metode": doc.get("metode"), "bukti_file_id": doc.get("bukti_file_id"),
+            "ref_type": "payment", "ref_id": doc["id"], "petugas": doc.get("petugas"), "created_at": now_iso()}
+
+
+async def _resolve_duplicate_payment(dup: dict, user: dict) -> dict:
+    """Idempotent retry: kembalikan payment existing; pulihkan tx bila hilang (partial failure healing)."""
+    tx = await db.transactions.find_one({"ref_type": "payment", "ref_id": dup["id"]}, {"_id": 0})
+    healed = False
+    if not tx:
+        s = await db.students.find_one({"id": dup["student_id"]}, {"_id": 0})
+        if s:
+            await db.transactions.insert_one(_payment_tx(dup, s))
+            healed = True
+            await log_audit("transaction", dup["id"], "heal", user, None,
+                            {"ref_type": "payment", "ref_id": dup["id"], "nominal": dup["nominal"]})
+    return {**clean(dup), "duplicate": True, "healed": healed}
 
 
 @router.put("/payments/{pay_id}")
@@ -251,7 +309,8 @@ async def update_payment(pay_id: str, body: PaymentIn, user: dict = Depends(FIN)
         raise HTTPException(status_code=400, detail="Alasan perubahan wajib diisi untuk audit")
     acc = await db.accounts.find_one({"id": body.account_id}, {"_id": 0})
     upd = {**body.model_dump(exclude={"alasan", "student_id"}), "account_nama": acc["nama"] if acc else old.get("account_nama")}
-    await db.payments.update_one({"id": pay_id}, {"$set": upd})
+    upd.pop("idem_key", None)
+    await db.payments.update_one({"id": pay_id}, {"$set": upd, "$unset": {"idem_key": ""}})
     await db.transactions.update_one({"ref_type": "payment", "ref_id": pay_id},
                                      {"$set": {"nominal": body.nominal, "tanggal": body.tanggal, "account_id": body.account_id, "metode": body.metode}})
     await log_audit("payment", pay_id, "update", user, {"nominal": old["nominal"], "tanggal": old["tanggal"], "metode": old["metode"]},
@@ -312,8 +371,7 @@ async def arrears(filter: Optional[str] = None, user: dict = Depends(FIN_READ)):
     return out
 
 
-# ---------- Rekonsiliasi ----------
-@router.get("/finance/reconciliations")
+# ---------- Rekonsiliasi ----------@router.get("/finance/reconciliations")
 async def list_recon(user: dict = Depends(FIN_READ)):
     rows = await db.reconciliations.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return rows
@@ -334,3 +392,212 @@ async def create_recon(body: ReconIn, user: dict = Depends(FIN)):
     await db.reconciliations.insert_one(doc)
     await log_audit("reconciliation", doc["id"], "create", user, {"saldo_sistem": acc["saldo"]}, {"saldo_aktual": body.saldo_aktual}, body.alasan)
     return clean(doc)
+
+
+# ---------- Expense Request / Approval ----------
+class ExpenseIn(BaseModel):
+    judul: str
+    kategori: str
+    nominal: float
+    tanggal: str
+    deskripsi: Optional[str] = ""
+    account_id: Optional[str] = ""
+    bukti_file_id: Optional[str] = None
+
+
+class ExpenseUpdateIn(BaseModel):
+    judul: Optional[str] = None
+    kategori: Optional[str] = None
+    nominal: Optional[float] = None
+    tanggal: Optional[str] = None
+    deskripsi: Optional[str] = None
+    account_id: Optional[str] = None
+    bukti_file_id: Optional[str] = None
+    alasan: Optional[str] = ""
+
+
+class ExpenseDecideIn(BaseModel):
+    setuju: bool
+    alasan: Optional[str] = ""
+
+
+class ExpensePayIn(BaseModel):
+    account_id: Optional[str] = None
+
+
+async def _next_expense_no() -> str:
+    c = await db.counters.find_one_and_update({"_id": "expense"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True)
+    return f"EXP-{date.today().strftime('%Y%m')}-{c['seq']:04d}"
+
+
+def _expense_actor_ok(exp: dict, user: dict) -> bool:
+    return user["role"] in ("owner", "finance") or exp.get("created_by_id") == user["id"]
+
+
+def _expense_hist(exp: dict, aksi: str, user: dict, alasan: str = "") -> list:
+    h = exp.get("history", [])
+    h.append({"aksi": aksi, "oleh": user["name"], "role": user["role"],
+              "tanggal": now_iso(), **({"alasan": alasan} if alasan else {})})
+    return h
+
+
+@router.get("/expenses")
+async def list_expenses(status: Optional[str] = None, dari: Optional[str] = None, sampai: Optional[str] = None,
+                        user: dict = Depends(EXP_READ)):
+    q: Dict[str, Any] = {}
+    if status:
+        if status not in EXPENSE_STATUSES:
+            raise HTTPException(status_code=400, detail="Status expense tidak valid")
+        q["status"] = status
+    if dari or sampai:
+        q["tanggal"] = {k: v for k, v in (("$gte", dari), ("$lte", sampai)) if v}
+    rows = await db.expenses.find(q, {"_id": 0}).sort([("tanggal", -1), ("created_at", -1)]).to_list(5000)
+    accs = {a["id"]: a["nama"] for a in await db.accounts.find({}, {"_id": 0, "id": 1, "nama": 1}).to_list(50)}
+    for r in rows:
+        r["account_nama"] = accs.get(r["account_id"])
+    return rows
+
+
+@router.get("/expenses/{exp_id}")
+async def get_expense(exp_id: str, user: dict = Depends(EXP_READ)):
+    exp = await db.expenses.find_one({"id": exp_id}, {"_id": 0})
+    if not exp:
+        raise HTTPException(status_code=404, detail="Pengajuan tidak ditemukan")
+    return exp
+
+
+@router.post("/expenses")
+async def create_expense(body: ExpenseIn, user: dict = Depends(EXP_WRITE)):
+    if body.nominal <= 0:
+        raise HTTPException(status_code=400, detail="Nominal harus lebih dari 0")
+    _check_kategori("pengeluaran", body.kategori)
+    if body.account_id and not await db.accounts.find_one({"id": body.account_id}):
+        raise HTTPException(status_code=404, detail="Rekening tidak ditemukan")
+    doc = {**body.model_dump(), "id": new_id(), "no_ref": await _next_expense_no(), "status": "draft",
+           "transaction_id": None, "created_by": user["name"], "created_by_id": user["id"],
+           "approved_by": None, "approved_at": None, "paid_by": None, "paid_at": None,
+           "history": [], "created_at": now_iso(), "updated_at": now_iso()}
+    doc["history"] = _expense_hist(doc, "create", user)
+    await db.expenses.insert_one(doc)
+    await log_audit("expense", doc["id"], "create", user, None, {"judul": body.judul, "nominal": body.nominal})
+    return clean(doc)
+
+
+@router.put("/expenses/{exp_id}")
+async def update_expense(exp_id: str, body: ExpenseUpdateIn, user: dict = Depends(EXP_WRITE)):
+    exp = await db.expenses.find_one({"id": exp_id}, {"_id": 0})
+    if not exp:
+        raise HTTPException(status_code=404, detail="Pengajuan tidak ditemukan")
+    if exp["status"] != "draft":
+        raise HTTPException(status_code=400, detail="Hanya draft yang dapat diubah")
+    if not _expense_actor_ok(exp, user):
+        raise HTTPException(status_code=403, detail="Anda tidak memiliki akses untuk mengubah pengajuan ini")
+    if not (body.alasan or "").strip():
+        raise HTTPException(status_code=400, detail="Alasan perubahan wajib diisi untuk audit")
+    upd = {k: v for k, v in body.model_dump(exclude={"alasan"}).items() if v is not None}
+    if "nominal" in upd and upd["nominal"] <= 0:
+        raise HTTPException(status_code=400, detail="Nominal harus lebih dari 0")
+    if "kategori" in upd:
+        _check_kategori("pengeluaran", upd["kategori"])
+    if "account_id" in upd and not await db.accounts.find_one({"id": upd["account_id"]}):
+        raise HTTPException(status_code=404, detail="Rekening tidak ditemukan")
+    before = {k: exp.get(k) for k in upd}
+    await db.expenses.update_one({"id": exp_id}, {"$set": {**upd, "history": _expense_hist(exp, "update", user, body.alasan.strip()), "updated_at": now_iso()}})
+    await log_audit("expense", exp_id, "update", user, before, {k: upd[k] for k in before}, body.alasan.strip())
+    return clean(await db.expenses.find_one({"id": exp_id}, {"_id": 0}))
+
+
+@router.post("/expenses/{exp_id}/submit")
+async def submit_expense(exp_id: str, user: dict = Depends(EXP_WRITE)):
+    exp = await db.expenses.find_one({"id": exp_id}, {"_id": 0})
+    if not exp:
+        raise HTTPException(status_code=404, detail="Pengajuan tidak ditemukan")
+    if exp["status"] != "draft":
+        raise HTTPException(status_code=400, detail="Hanya draft yang dapat diajukan")
+    if not _expense_actor_ok(exp, user):
+        raise HTTPException(status_code=403, detail="Anda tidak memiliki akses untuk mengajukan ini")
+    await db.expenses.update_one({"id": exp_id}, {"$set": {"status": "diajukan", "history": _expense_hist(exp, "submit", user), "updated_at": now_iso()}})
+    await log_audit("expense", exp_id, "submit", user, {"status": "draft"}, {"status": "diajukan"})
+    return clean(await db.expenses.find_one({"id": exp_id}, {"_id": 0}))
+
+
+@router.post("/expenses/{exp_id}/cancel")
+async def cancel_expense(exp_id: str, user: dict = Depends(EXP_WRITE)):
+    exp = await db.expenses.find_one({"id": exp_id}, {"_id": 0})
+    if not exp:
+        raise HTTPException(status_code=404, detail="Pengajuan tidak ditemukan")
+    if exp["status"] != "draft":
+        raise HTTPException(status_code=400, detail="Hanya draft yang dapat dibatalkan")
+    if not _expense_actor_ok(exp, user):
+        raise HTTPException(status_code=403, detail="Anda tidak memiliki akses untuk membatalkan ini")
+    await db.expenses.update_one({"id": exp_id}, {"$set": {"status": "dibatalkan", "history": _expense_hist(exp, "cancel", user), "updated_at": now_iso()}})
+    await log_audit("expense", exp_id, "cancel", user, {"status": "draft"}, {"status": "dibatalkan"})
+    return clean(await db.expenses.find_one({"id": exp_id}, {"_id": 0}))
+
+
+@router.post("/expenses/{exp_id}/decide")
+async def decide_expense(exp_id: str, body: ExpenseDecideIn, user: dict = Depends(EXP_APPROVE)):
+    exp = await db.expenses.find_one({"id": exp_id}, {"_id": 0})
+    if not exp:
+        raise HTTPException(status_code=404, detail="Pengajuan tidak ditemukan")
+    if exp["status"] != "diajukan":
+        raise HTTPException(status_code=400, detail="Hanya pengajuan yang diajukan yang dapat diputuskan")
+    if body.setuju and exp["nominal"] >= EXPENSE_OWNER_THRESHOLD and user["role"] != "owner":
+        raise HTTPException(status_code=403, detail="Nominal di atas Rp1.000.000 membutuhkan persetujuan Owner")
+    if not body.setuju and not (body.alasan or "").strip():
+        raise HTTPException(status_code=400, detail="Alasan penolakan wajib diisi")
+    if body.setuju:
+        upd = {"status": "disetujui", "approved_by": user["name"], "approved_at": now_iso()}
+        await db.expenses.update_one({"id": exp_id}, {"$set": {**upd, "history": _expense_hist(exp, "approve", user), "updated_at": now_iso()}})
+        await log_audit("expense", exp_id, "approve", user, {"status": "diajukan"}, {"status": "disetujui", "nominal": exp["nominal"]})
+    else:
+        await db.expenses.update_one({"id": exp_id}, {"$set": {"status": "ditolak", "history": _expense_hist(exp, "reject", user, body.alasan.strip()), "updated_at": now_iso()}})
+        await log_audit("expense", exp_id, "reject", user, {"status": "diajukan"}, {"status": "ditolak"}, body.alasan.strip())
+    return clean(await db.expenses.find_one({"id": exp_id}, {"_id": 0}))
+
+
+@router.post("/expenses/{exp_id}/pay")
+async def pay_expense(exp_id: str, body: ExpensePayIn, user: dict = Depends(EXP_PAY)):
+    exp = await db.expenses.find_one({"id": exp_id}, {"_id": 0})
+    if not exp:
+        raise HTTPException(status_code=404, detail="Pengajuan tidak ditemukan")
+    if exp.get("transaction_id"):
+        tx = await db.transactions.find_one({"id": exp["transaction_id"]}, {"_id": 0})
+        if tx:
+            return {**clean(exp), "already_paid": True}
+    if exp["status"] != "disetujui":
+        raise HTTPException(status_code=400, detail="Hanya expense yang disetujui yang dapat dibayar")
+    account_id = body.account_id or exp["account_id"]
+    acc = await db.accounts.find_one({"id": account_id}, {"_id": 0})
+    if not acc:
+        raise HTTPException(status_code=404, detail="Rekening tidak ditemukan")
+    tx = {"id": new_id(), "jenis": "pengeluaran", "kategori": exp["kategori"], "nominal": exp["nominal"],
+          "tanggal": today_str(), "deskripsi": f"{exp['judul']} ({exp['no_ref']})",
+          "account_id": account_id, "account_nama": acc["nama"], "metode": "transfer", "bukti_file_id": exp.get("bukti_file_id"),
+          "ref_type": "expense", "ref_id": exp_id, "petugas": user["name"], "created_at": now_iso()}
+    try:
+        await db.transactions.insert_one(tx)
+    except DuplicateKeyError:
+        tx2 = await db.transactions.find_one({"ref_type": "expense", "ref_id": exp_id}, {"_id": 0})
+        if not tx2:
+            raise
+        cur = await db.expenses.find_one({"id": exp_id}, {"_id": 0})
+        if not cur.get("transaction_id"):
+            await db.expenses.update_one({"id": exp_id}, {"$set": {"status": "dibayar", "account_id": tx2["account_id"],
+                                                                   "transaction_id": tx2["id"], "paid_by": user["name"],
+                                                                   "paid_at": now_iso(),
+                                                                   "history": _expense_hist(cur, "pay", user),
+                                                                   "updated_at": now_iso()}})
+            await log_audit("expense", exp_id, "pay", user, {"status": "disetujui"},
+                            {"status": "dibayar", "nominal": exp["nominal"], "transaction_id": tx2["id"]})
+        return {**clean(await db.expenses.find_one({"id": exp_id}, {"_id": 0})), "already_paid": True}
+    await db.expenses.update_one({"id": exp_id}, {"$set": {"status": "dibayar", "account_id": account_id,
+                                                           "transaction_id": tx["id"], "paid_by": user["name"],
+                                                           "paid_at": now_iso(),
+                                                           "history": _expense_hist(exp, "pay", user),
+                                                           "updated_at": now_iso()}})
+    await log_audit("expense", exp_id, "pay", user, {"status": "disetujui"},
+                    {"status": "dibayar", "nominal": exp["nominal"], "transaction_id": tx["id"]})
+    await log_audit("transaction", tx["id"], "create", user, None,
+                    {"jenis": "pengeluaran", "kategori": exp["kategori"], "nominal": exp["nominal"]})
+    return clean(await db.expenses.find_one({"id": exp_id}, {"_id": 0}))

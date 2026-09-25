@@ -5,6 +5,9 @@ import { useApi } from "@/hooks/useApi";
 import { useAuth } from "@/context/AuthContext";
 import { api, errMsg } from "@/lib/api";
 import { PageHeader, Tabs, FormDialog, Field, EmptyState, Money, Loading } from "@/components/common";
+import HrAttendanceTab from "@/components/HrAttendanceTab";
+import LeaveTab from "@/components/LeaveTab";
+import PayrollTab from "@/components/PayrollTab";
 import { fmtDate } from "@/lib/format";
 
 const EMPTY = { nama: "", tipe: "karyawan", nik: "", jabatan: "", no_hp: "", email: "", alamat: "", tanggal_masuk: "", status_kerja: "tetap", gaji_pokok: 0, tunjangan: 0, honor_per_pertemuan: 0, spesialisasi: "", sertifikat: "", kontrak_berakhir: "", aktif: true };
@@ -16,6 +19,16 @@ export default function HRPage() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const [editId, setEditId] = useState(null);
+  const showAtt = can("hr_attendance");
+  const showLeave = can("leave");
+  const showPayroll = can("payroll");
+  const tabs = [
+    { key: "guru", label: "Guru", count: (data || []).filter((e) => e.tipe === "guru").length },
+    { key: "karyawan", label: "Karyawan", count: (data || []).filter((e) => e.tipe === "karyawan").length },
+    ...(showAtt ? [{ key: "absensi", label: "Absensi" }] : []),
+    ...(showLeave ? [{ key: "cuti", label: "Cuti" }] : []),
+    ...(showPayroll ? [{ key: "payroll", label: "Payroll" }] : []),
+  ];
   const rows = (data || []).filter((e) => e.tipe === tab);
 
   const save = async () => {
@@ -29,10 +42,11 @@ export default function HRPage() {
   return (
     <div>
       <PageHeader title="Guru & Karyawan" jp="教師・職員" subtitle="Biodata, jabatan, gaji/honor, kontrak, dan kelas yang diajar.">
-        {can("sdm_write") && <button className="btn-red" onClick={() => { setForm({ ...EMPTY, tipe: tab }); setEditId(null); setOpen(true); }} data-testid="add-employee-btn"><Plus size={16} />Tambah {tab === "guru" ? "Guru" : "Karyawan"}</button>}
+        {can("sdm_write") && (tab === "guru" || tab === "karyawan") && <button className="btn-red" onClick={() => { setForm({ ...EMPTY, tipe: tab }); setEditId(null); setOpen(true); }} data-testid="add-employee-btn"><Plus size={16} />Tambah {tab === "guru" ? "Guru" : "Karyawan"}</button>}
       </PageHeader>
-      <Tabs active={tab} onChange={setTab} testPrefix="hr-tab" tabs={[{ key: "guru", label: "Guru", count: (data || []).filter((e) => e.tipe === "guru").length }, { key: "karyawan", label: "Karyawan", count: (data || []).filter((e) => e.tipe === "karyawan").length }]} />
-      {loading && !data ? <Loading /> : (
+      <Tabs active={tab} onChange={setTab} testPrefix="hr-tab" tabs={tabs} />
+      {tab === "absensi" ? <HrAttendanceTab employees={data} loadingEmployees={loading && !data} /> : tab === "cuti" ? <LeaveTab employees={data} /> : tab === "payroll" ? <PayrollTab employees={data} /> : (
+      <>{loading && !data ? <Loading /> : (
         <div className="table-wrap fade-up"><table className="tbl" data-testid="employees-table"><thead><tr><th>Nama</th><th>Jabatan</th>{tab === "guru" ? <><th>Spesialisasi</th><th>Kelas Diajar</th><th>Honor/Pertemuan</th></> : <><th>Status</th><th>Masuk</th></>}<th>Gaji Pokok</th><th>Kontrak</th><th>Kontak</th><th></th></tr></thead>
           <tbody>{rows.length === 0 && <tr><td colSpan={9}><EmptyState /></td></tr>}
             {rows.map((e) => <tr key={e.id} data-testid={`employee-row-${e.id}`}><td><p className="font-semibold">{e.nama}</p><p className="text-xs text-slate-400">{e.email}</p></td><td>{e.jabatan}</td>
@@ -62,6 +76,7 @@ export default function HRPage() {
           <Field label="Aktif"><select className="input" value={form.aktif ? "1" : "0"} onChange={(e) => setForm({ ...form, aktif: e.target.value === "1" })}><option value="1">Aktif</option><option value="0">Nonaktif</option></select></Field>
         </div>
       </FormDialog>
+      </>)}
     </div>
   );
 }

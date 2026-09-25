@@ -3,13 +3,18 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Q
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from core import (db, require_roles, get_current_user, new_id, now_iso, today_str, clean, clean_list, log_audit,
+from core import (db, require_roles, get_current_user, deny_student, new_id, now_iso, today_str, clean, clean_list, log_audit,
                   STUDENT_STATUSES, DOC_TYPES, payment_summary_map, fee_total, attendance_summary, grade_average,
-                  doc_progress, compute_age, save_upload, get_object, user_from_token)
+                  doc_progress, compute_age, save_upload, user_from_token)
+from document_storage import storage as doc_storage, ALLOWED_DOC_EXTENSIONS
 
 router = APIRouter()
 WRITE = require_roles("admin", "marketing", "staff")
 READ = require_roles("admin", "marketing", "staff", "finance", "hr", "guru")
+# Role yang boleh melihat data pembayaran siswa (konsisten dengan modul pembayaran & reports).
+FIN_VISIBLE = ("owner", "admin", "finance", "hr")
+# P1.2: sumber prospek terkontrol (controlled free-text).
+SUMBER_PROSPEK = ["referral", "sosmed", "iklan", "sekolah", "kunjungan", "lainnya"]
 
 
 class StudentIn(BaseModel):
@@ -38,6 +43,38 @@ class StudentIn(BaseModel):
     fee_plan: Optional[List[Dict[str, Any]]] = None
     jatuh_tempo: Optional[str] = None
     catatan: Optional[str] = ""
+    sumber_prospek: Optional[str] = ""
+    pemilik_lead: Optional[str] = ""
+    wa_student_phone: Optional[str] = ""
+    wa_guardian_phone: Optional[str] = ""
+    wa_student_opt_in: Optional[bool] = None
+    wa_guardian_opt_in: Optional[bool] = None
+    wa_student_verified_at: Optional[str] = None
+    wa_guardian_verified_at: Optional[str] = None
+
+
+def apply_wa_contact(doc: dict, existing: Optional[dict] = None) -> dict:
+    """Normalisasi non-destruktif: source no_hp* dipertahankan, representasi wa_* diperbarui.
+    Nilai consent None berarti 'jangan ubah' (update); saat create diisi False."""
+    from routers.whatsapp import normalize_phone
+    base = existing or {}
+    if doc.get("no_hp"):
+        doc["wa_student_phone"] = normalize_phone(doc["no_hp"]) or ""
+    elif not doc.get("wa_student_phone"):
+        doc["wa_student_phone"] = base.get("wa_student_phone", "")
+    if doc.get("no_hp_orang_tua"):
+        doc["wa_guardian_phone"] = normalize_phone(doc["no_hp_orang_tua"]) or ""
+    elif not doc.get("wa_guardian_phone"):
+        doc["wa_guardian_phone"] = base.get("wa_guardian_phone", "")
+    if doc.get("wa_student_opt_in") is None:
+        doc["wa_student_opt_in"] = base.get("wa_student_opt_in", False)
+    if doc.get("wa_guardian_opt_in") is None:
+        doc["wa_guardian_opt_in"] = base.get("wa_guardian_opt_in", False)
+    if doc.get("wa_student_verified_at") is None:
+        doc["wa_student_verified_at"] = base.get("wa_student_verified_at")
+    if doc.get("wa_guardian_verified_at") is None:
+        doc["wa_guardian_verified_at"] = base.get("wa_guardian_verified_at")
+    return doc
 
 
 class StatusIn(BaseModel):
@@ -65,6 +102,14 @@ class DocStatusIn(BaseModel):
     tanggal_kadaluarsa: Optional[str] = None
 
 
+class DocVerifyIn(BaseModel):
+    note: Optional[str] = ""
+
+
+class DocRejectIn(BaseModel):
+    reason: str
+
+
 DEFAULT_FEE_PLAN = [
     {"nama": "Pendaftaran", "nominal": 500000}, {"nama": "Pelatihan", "nominal": 8000000},
     {"nama": "Asrama", "nominal": 3000000}, {"nama": "Dokumen", "nominal": 2000000},
@@ -72,15 +117,17 @@ DEFAULT_FEE_PLAN = [
 ]
 
 
-async def enrich(students: list) -> list:
+async def enrich(students: list, user: Optional[dict] = None) -> list:
     ids = [s["id"] for s in students]
-    pay = await payment_summary_map(ids)
+    show_pay = (user or {}).get("role", "owner") in FIN_VISIBLE
+    pay = await payment_summary_map(ids) if show_pay else {}
     classes = {c["id"]: c["nama"] for c in await db.classes.find({}, {"_id": 0, "id": 1, "nama": 1}).to_list(500)}
     out = []
     for s in students:
         total = fee_total(s)
         bayar = pay.get(s["id"], {}).get("bayar", 0)
-        s["pembayaran"] = {"total": total, "bayar": bayar, "sisa": max(total - bayar, 0)}
+        if show_pay:
+            s["pembayaran"] = {"total": total, "bayar": bayar, "sisa": max(total - bayar, 0)}
         s["kelas_nama"] = classes.get(s.get("class_id"))
         s["usia"] = compute_age(s.get("tanggal_lahir"))
         out.append(s)
@@ -101,22 +148,25 @@ async def list_students(status: Optional[str] = None, q: Optional[str] = None, c
         emp_classes = await db.classes.find({"guru_id": user.get("employee_id")}, {"_id": 0, "id": 1}).to_list(100)
         query["class_id"] = {"$in": [c["id"] for c in emp_classes]}
     rows = await db.students.find(query, {"_id": 0}).sort("created_at", -1).to_list(2000)
-    return await enrich(rows)
+    return await enrich(rows, user)
 
 
 @router.post("/students")
 async def create_student(body: StudentIn, user: dict = Depends(WRITE)):
     if body.status not in STUDENT_STATUSES:
         raise HTTPException(status_code=400, detail="Status tidak valid")
+    if body.sumber_prospek and body.sumber_prospek not in SUMBER_PROSPEK:
+        raise HTTPException(status_code=400, detail="Sumber prospek tidak valid")
     if body.nik and await db.students.find_one({"nik": body.nik}):
         raise HTTPException(status_code=400, detail="NIK sudah terdaftar")
     doc = body.model_dump()
+    doc = apply_wa_contact(doc)
     doc.update({"id": new_id(), "fee_plan": body.fee_plan or DEFAULT_FEE_PLAN, "class_id": None,
                 "status_history": [{"status": body.status, "tanggal": now_iso(), "oleh": user["name"], "catatan": "Pendaftaran awal"}],
                 "created_at": now_iso(), "created_by": user["name"]})
     await db.students.insert_one(doc)
     await log_audit("student", doc["id"], "create", user, None, {"nama": doc["nama_lengkap"], "status": doc["status"]})
-    return (await enrich([clean(doc)]))[0]
+    return (await enrich([clean(doc)], user))[0]
 
 
 @router.get("/students/{student_id}")
@@ -124,11 +174,18 @@ async def get_student(student_id: str, user: dict = Depends(READ)):
     s = await db.students.find_one({"id": student_id}, {"_id": 0})
     if not s:
         raise HTTPException(status_code=404, detail="Siswa tidak ditemukan")
-    s = (await enrich([s]))[0]
+    if user["role"] == "guru":
+        emp_classes = await db.classes.find({"guru_id": user.get("employee_id")}, {"_id": 0, "id": 1}).to_list(100)
+        if s.get("class_id") not in [c["id"] for c in emp_classes]:
+            raise HTTPException(status_code=403, detail="Anda tidak memiliki akses ke siswa ini")
+    s = (await enrich([s], user))[0]
     s["absensi"] = await attendance_summary(student_id)
     s["nilai_rata"] = await grade_average(student_id)
     s["dokumen"] = await doc_progress(student_id)
-    s["payments"] = await db.payments.find({"student_id": student_id}, {"_id": 0}).sort("tanggal", -1).to_list(200)
+    if user["role"] in FIN_VISIBLE:
+        s["payments"] = await db.payments.find({"student_id": student_id}, {"_id": 0}).sort("tanggal", -1).to_list(200)
+    else:
+        s["payments"] = []
     s["selections"] = await db.selections.find({"student_id": student_id}, {"_id": 0}).sort("tanggal", -1).to_list(100)
     s["grades"] = await db.grades.find({"student_id": student_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
     s["attendance_rows"] = await db.attendance.find({"student_id": student_id}, {"_id": 0}).sort("tanggal", -1).to_list(60)
@@ -146,13 +203,16 @@ async def update_student(student_id: str, body: StudentIn, user: dict = Depends(
     existing = await db.students.find_one({"id": student_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Siswa tidak ditemukan")
+    if body.sumber_prospek and body.sumber_prospek not in SUMBER_PROSPEK:
+        raise HTTPException(status_code=400, detail="Sumber prospek tidak valid")
     upd = body.model_dump(exclude={"status", "fee_plan"})
+    upd = apply_wa_contact(upd, existing)
     await db.students.update_one({"id": student_id}, {"$set": upd})
     diff_before = {k: existing.get(k) for k in upd if existing.get(k) != upd[k]}
     diff_after = {k: upd[k] for k in diff_before}
     if diff_before:
         await log_audit("student", student_id, "update", user, diff_before, diff_after)
-    return (await enrich([await db.students.find_one({"id": student_id}, {"_id": 0})]))[0]
+    return (await enrich([await db.students.find_one({"id": student_id}, {"_id": 0})], user))[0]
 
 
 @router.delete("/students/{student_id}")
@@ -235,16 +295,42 @@ async def upload_document(student_id: str, jenis: str = Form(...), kategori: str
     file_rec = None
     if file and file.filename:
         try:
-            file_rec = await save_upload(file, user, "dokumen")
+            file_rec = await save_upload(file, user, "dokumen", allowed_exts=ALLOWED_DOC_EXTENSIONS, scope=student_id)
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Upload gagal: {e}")
-    doc = {"id": new_id(), "student_id": student_id, "jenis": jenis, "kategori": kategori, "status": "tersedia",
+    doc = {"id": new_id(), "student_id": student_id, "jenis": jenis, "kategori": kategori, "status": "pending_verification",
            "file_id": file_rec["id"] if file_rec else None, "original_filename": file_rec["original_filename"] if file_rec else None,
            "content_type": file_rec["content_type"] if file_rec else None,
            "tanggal_upload": today_str(), "tanggal_kadaluarsa": tanggal_kadaluarsa or None, "uploaded_by": user["name"],
-           "is_deleted": False, "created_at": now_iso()}
-    await db.documents.update_many({"student_id": student_id, "jenis": jenis, "is_deleted": False}, {"$set": {"is_deleted": True}})
-    await db.documents.insert_one(doc)
+           "verified_by": None, "verified_at": None, "verification_note": "",
+           "rejected_reason": "", "is_deleted": False, "created_at": now_iso()}
+    old = await db.documents.find({"student_id": student_id, "jenis": jenis, "is_deleted": False}, {"_id": 0, "file_id": 1}).to_list(50)
+    try:
+        await db.documents.update_many({"student_id": student_id, "jenis": jenis, "is_deleted": False}, {"$set": {"is_deleted": True}})
+        await db.documents.insert_one(doc)
+    except Exception:
+        if file_rec:
+            try:
+                doc_storage.delete(file_rec["storage_path"])
+            except Exception:
+                pass
+            try:
+                await db.files.delete_one({"id": file_rec["id"]})
+            except Exception:
+                pass
+        raise HTTPException(status_code=502, detail="Upload gagal: metadata tidak dapat disimpan")
+    if file_rec and old:
+        for o in old:
+            if o.get("file_id"):
+                try:
+                    rec = await db.files.find_one({"id": o["file_id"]}, {"_id": 0, "storage_path": 1})
+                    if rec:
+                        doc_storage.delete(rec["storage_path"])
+                        await db.files.update_one({"id": o["file_id"]}, {"$set": {"is_deleted": True}})
+                except Exception:
+                    pass
     await log_audit("document", doc["id"], "upload", user, None, {"student_id": student_id, "jenis": jenis})
     return clean(doc)
 
@@ -265,17 +351,46 @@ async def set_doc_status(student_id: str, body: DocStatusIn, user: dict = Depend
     return clean(doc)
 
 
+@router.put("/students/{student_id}/documents/{doc_id}/verify")
+async def verify_document(student_id: str, doc_id: str, body: DocVerifyIn, user: dict = Depends(WRITE)):
+    doc = await db.documents.find_one({"id": doc_id, "student_id": student_id, "is_deleted": False}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Dokumen tidak ditemukan")
+    await db.documents.update_one({"id": doc_id}, {"$set": {"status": "verified",
+        "verified_by": user["name"], "verified_at": now_iso(),
+        "verification_note": (body.note or "").strip(), "rejected_reason": ""}})
+    await log_audit("document", doc_id, "verify", user, {"status": doc.get("status")}, {"status": "verified"})
+    return clean(await db.documents.find_one({"id": doc_id}, {"_id": 0}))
+
+
+@router.put("/students/{student_id}/documents/{doc_id}/reject")
+async def reject_document(student_id: str, doc_id: str, body: DocRejectIn, user: dict = Depends(WRITE)):
+    if not (body.reason or "").strip():
+        raise HTTPException(status_code=400, detail="Alasan penolakan wajib diisi")
+    doc = await db.documents.find_one({"id": doc_id, "student_id": student_id, "is_deleted": False}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Dokumen tidak ditemukan")
+    await db.documents.update_one({"id": doc_id}, {"$set": {"status": "rejected",
+        "rejected_reason": body.reason.strip(), "verified_by": None, "verified_at": None}})
+    await log_audit("document", doc_id, "reject", user, {"status": doc.get("status")},
+                    {"status": "rejected"}, body.reason.strip())
+    return clean(await db.documents.find_one({"id": doc_id}, {"_id": 0}))
+
+
 @router.get("/files/{file_id}")
 async def download_file(file_id: str, authorization: str = Header(None), auth: str = Query(None)):
     token = auth or (authorization[7:] if authorization and authorization.startswith("Bearer ") else None)
     if not token:
         raise HTTPException(status_code=401, detail="Belum login")
-    await user_from_token(token)
+    deny_student(await user_from_token(token))
     rec = await db.files.find_one({"id": file_id, "is_deleted": False})
     if not rec:
         raise HTTPException(status_code=404, detail="File tidak ditemukan")
     try:
-        data, ct = get_object(rec["storage_path"])
+        data, _ = doc_storage.open(rec["storage_path"])
+        ct = rec.get("content_type") or "application/octet-stream"
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File tidak ditemukan di penyimpanan server")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Gagal mengambil file: {e}")
     return Response(content=data, media_type=rec.get("content_type") or ct,
@@ -284,6 +399,7 @@ async def download_file(file_id: str, authorization: str = Header(None), auth: s
 
 @router.post("/upload")
 async def generic_upload(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    deny_student(user)
     try:
         return await save_upload(file, user, "bukti")
     except HTTPException:

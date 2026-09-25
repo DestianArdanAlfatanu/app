@@ -4,6 +4,7 @@ from pydantic import BaseModel, EmailStr
 
 from core import (db, hash_password, verify_password, create_access_token, create_refresh_token, public_user,
                   get_current_user, require_roles, new_id, now_iso, ROLES, clean_list, log_audit)
+from pymongo.errors import DuplicateKeyError
 
 router = APIRouter()
 
@@ -19,6 +20,8 @@ class UserIn(BaseModel):
     password: Optional[str] = None
     role: str
     employee_id: Optional[str] = None
+    student_id: Optional[str] = None
+    must_change_password: Optional[bool] = False
     aktif: bool = True
 
 
@@ -69,17 +72,51 @@ async def list_users(user: dict = Depends(require_roles("owner", "admin", "hr"))
 
 
 @router.post("/users")
-async def create_user(body: UserIn, user: dict = Depends(require_roles("owner"))):
-    if body.role not in ROLES:
+async def create_user(body: UserIn, user: dict = Depends(get_current_user)):
+    if body.role == "student":
+        if user["role"] not in ("owner", "admin"):
+            raise HTTPException(status_code=403, detail="Anda tidak memiliki akses ke fitur ini")
+        if not body.student_id or not await db.students.find_one({"id": body.student_id}):
+            raise HTTPException(status_code=400, detail="student_id tidak valid")
+        if await db.users.find_one({"student_id": body.student_id}):
+            raise HTTPException(status_code=409, detail="Siswa sudah memiliki akun")
+    elif user["role"] != "owner":
+        raise HTTPException(status_code=403, detail="Anda tidak memiliki akses ke fitur ini")
+    if body.role not in ROLES and body.role != "student":
         raise HTTPException(status_code=400, detail="Role tidak valid")
     if not body.password or len(body.password) < 6:
         raise HTTPException(status_code=400, detail="Password minimal 6 karakter")
     email = body.email.lower().strip()
-    if await db.users.find_one({"email": email}):
+    dup = await db.users.find_one({"email": email})
+    if dup:
+        # RV-DEF-01: a student-provisioning race loser can slip past the
+        # student_id pre-check and land here after the winner's insert.
+        # Same (email, student_id) -> the race was lost -> 409, never 400.
+        # A genuinely different owner keeps existing 400. Non-student unchanged.
+        if body.role == "student" and dup.get("student_id") == body.student_id:
+            raise HTTPException(status_code=409, detail="Siswa sudah memiliki akun")
         raise HTTPException(status_code=400, detail="Email sudah terdaftar")
     doc = {"id": new_id(), "name": body.name, "email": email, "role": body.role, "employee_id": body.employee_id,
+           "student_id": body.student_id if body.role == "student" else None,
+           "must_change_password": True if body.role == "student" else False,
            "aktif": body.aktif, "password_hash": hash_password(body.password), "created_at": now_iso()}
-    await db.users.insert_one(doc)
+    try:
+        await db.users.insert_one(doc)
+    except DuplicateKeyError as e:
+        # RV-DEF-01: last-resort deterministic mapping for student provisioning.
+        # Re-query instead of trusting check order/timing: any conflict involving
+        # this student_id (winner already persisted) -> 409. Genuine cross-user
+        # email conflict keeps existing 400. Non-student path unchanged.
+        if body.role == "student":
+            if await db.users.find_one({"student_id": body.student_id}):
+                raise HTTPException(status_code=409, detail="Siswa sudah memiliki akun")
+            by_email = await db.users.find_one({"email": email})
+            if by_email and by_email.get("student_id") == body.student_id:
+                raise HTTPException(status_code=409, detail="Siswa sudah memiliki akun")
+        detail = str(getattr(e, "details", "") or "")
+        if "student_id" in detail:
+            raise HTTPException(status_code=409, detail="Siswa sudah memiliki akun")
+        raise HTTPException(status_code=400, detail="Email sudah terdaftar")
     await log_audit("user", doc["id"], "create", user, None, {"email": email, "role": body.role})
     return public_user(doc)
 

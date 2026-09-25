@@ -14,7 +14,7 @@ api.interceptors.request.use((cfg) => {
 api.interceptors.response.use(
   (r) => r,
   (e) => {
-    if (e.response?.status === 401 && !window.location.pathname.startsWith("/login")) {
+    if (e.response?.status === 401 && !window.location.pathname.startsWith("/login") && !window.location.pathname.startsWith("/portal")) {
       localStorage.removeItem(TOKEN_KEY);
       window.location.href = "/login";
     }

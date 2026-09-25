@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CheckCircle2, XCircle, Upload, Eye, Plus, Trash2 } from "lucide-react";
+import { CheckCircle2, XCircle, Upload, Eye, Plus, Trash2, Clock, Check, X } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { useApi } from "@/hooks/useApi";
@@ -86,27 +86,57 @@ export const DokumenTab = ({ s, reload }) => {
     fd.append("jenis", f.jenis); fd.append("kategori", f.kategori);
     if (f.tanggal_kadaluarsa) fd.append("tanggal_kadaluarsa", f.tanggal_kadaluarsa);
     if (f.file) fd.append("file", f.file);
-    try { await api.post(`/students/${s.id}/documents`, fd); toast.success("Dokumen tersimpan"); setOpen(false); reloadDocs(); reload(); }
-    catch (e) { toast.error(errMsg(e)); } finally { setSaving(false); }
+    try { await api.post(`/students/${s.id}/documents`, fd); toast.success("Dokumen tersimpan — menunggu verifikasi"); setOpen(false); reloadDocs(); reload(); }
+    catch (e) {
+      console.error("Upload dokumen gagal:", e);
+      const msg = errMsg(e);
+      toast.error(/storage|penyimpanan|Upload gagal|502/i.test(msg)
+        ? "Upload dokumen gagal karena penyimpanan file belum tersedia. Silakan coba lagi setelah konfigurasi penyimpanan diperbaiki."
+        : msg);
+    } finally { setSaving(false); }
+  };
+  const verify = async (d) => {
+    try { await api.put(`/students/${s.id}/documents/${d.id}/verify`, { note: "" }); toast.success("Dokumen terverifikasi"); reloadDocs(); reload(); }
+    catch (e) { toast.error(errMsg(e)); }
+  };
+  const reject = async (d) => {
+    const reason = window.prompt(`Alasan penolakan dokumen ${d.jenis}:`, "");
+    if (reason === null) return;
+    if (!reason.trim()) { toast.error("Alasan penolakan wajib diisi"); return; }
+    try { await api.put(`/students/${s.id}/documents/${d.id}/reject`, { reason: reason.trim() }); toast.success("Dokumen ditolak"); reloadDocs(); reload(); }
+    catch (e) { toast.error(errMsg(e)); }
   };
   const unset = async (d) => {
     if (!window.confirm(`Tandai ${d.jenis} sebagai belum tersedia?`)) return;
     try { await api.put(`/students/${s.id}/documents/status`, { jenis: d.jenis, kategori: d.kategori, status: "belum" }); reloadDocs(); reload(); } catch (e) { toast.error(errMsg(e)); }
   };
   const groups = (docs || []).reduce((a, d) => ({ ...a, [d.kategori]: [...(a[d.kategori] || []), d] }), {});
+  const doneCount = (list) => list.filter((d) => d.status === "tersedia" || d.status === "verified").length;
+  const statusChip = (d) => {
+    if (d.status === "verified") return <span className="chip bg-emerald-50 text-emerald-700 border-emerald-200">Terverifikasi</span>;
+    if (d.status === "pending_verification") return <span className="chip bg-amber-50 text-amber-700 border-amber-200">Menunggu verifikasi</span>;
+    if (d.status === "rejected") return <span className="chip bg-red-50 text-red-700 border-red-200">Ditolak</span>;
+    if (d.status === "tersedia") return <span className="chip bg-slate-100 text-slate-600 border-slate-200">Tersedia</span>;
+    return null;
+  };
   return (
     <div className="fade-up">
       {can("siswa_write") && <button className="btn-primary mb-4" onClick={() => openUpload(null)} data-testid="upload-document-btn"><Upload size={15} />Upload Dokumen</button>}
       <div className="grid md:grid-cols-2 gap-4">
         {Object.entries(groups).map(([k, list]) => (
-          <div key={k} className="card"><div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between"><h3 className="font-semibold text-sm">{KAT[k] || k}</h3><span className="text-xs text-slate-500">{list.filter((d) => d.status === "tersedia").length}/{list.length} tersedia</span></div>
+          <div key={k} className="card"><div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between"><h3 className="font-semibold text-sm">{KAT[k] || k}</h3><span className="text-xs text-slate-500">{doneCount(list)}/{list.length} lengkap</span></div>
             <ul>{list.map((d) => (
               <li key={d.jenis} data-testid={`doc-item-${d.jenis.replace(/\s+/g, "-").toLowerCase()}`} className="flex items-center gap-3 px-5 py-3 border-b border-slate-50 last:border-0">
-                {d.status === "tersedia" ? <CheckCircle2 size={18} className="text-emerald-600 shrink-0" /> : <XCircle size={18} className="text-slate-300 shrink-0" />}
-                <div className="flex-1 min-w-0"><p className="text-sm font-medium text-slate-800">{d.jenis}</p>
-                  <p className="text-xs text-slate-500 truncate">{d.status === "tersedia" ? `Upload ${fmtDate(d.tanggal_upload)} · ${d.uploaded_by}${d.original_filename ? ` · ${d.original_filename}` : ""}` : "Belum tersedia"}
+                {d.status === "tersedia" || d.status === "verified" ? <CheckCircle2 size={18} className="text-emerald-600 shrink-0" /> : d.status === "rejected" ? <XCircle size={18} className="text-red-500 shrink-0" /> : d.status === "pending_verification" ? <Clock size={18} className="text-amber-500 shrink-0" /> : <XCircle size={18} className="text-slate-300 shrink-0" />}
+                <div className="flex-1 min-w-0"><p className="text-sm font-medium text-slate-800">{d.jenis} {statusChip(d)}</p>
+                  <p className="text-xs text-slate-500 truncate">{d.status === "belum" ? "Belum tersedia" : `Upload ${fmtDate(d.tanggal_upload)} · ${d.uploaded_by}${d.original_filename ? ` · ${d.original_filename}` : ""}`}
+                    {!d.file_id && d.status !== "belum" ? " · File belum tersedia" : ""}
+                    {d.status === "verified" && d.verified_by ? ` · Diverifikasi ${d.verified_by}` : ""}
+                    {d.status === "rejected" && d.rejected_reason ? ` · Alasan: ${d.rejected_reason}` : ""}
                     {d.tanggal_kadaluarsa && <span className={`ml-2 font-semibold ${d.tanggal_kadaluarsa < today ? "text-red-600" : d.tanggal_kadaluarsa <= soon ? "text-amber-600" : "text-slate-400"}`}>{d.tanggal_kadaluarsa < today ? "Expired" : "Exp"} {fmtDate(d.tanggal_kadaluarsa)}</span>}</p></div>
-                {d.file_id && <a href={fileUrl(d.file_id)} target="_blank" rel="noreferrer" className="btn-ghost btn-sm" data-testid={`doc-view-${d.jenis.replace(/\s+/g, "-").toLowerCase()}`}><Eye size={14} /></a>}
+                {d.file_id && <a href={fileUrl(d.file_id)} target="_blank" rel="noreferrer" className="btn-ghost btn-sm" title="Lihat / unduh file" data-testid={`doc-view-${d.jenis.replace(/\s+/g, "-").toLowerCase()}`}><Eye size={14} /></a>}
+                {can("siswa_write") && d.status === "pending_verification" && <button className="btn-ghost btn-sm text-emerald-700" title="Verifikasi dokumen" onClick={() => verify(d)} data-testid={`doc-verify-${d.jenis.replace(/\s+/g, "-").toLowerCase()}`}><Check size={14} /></button>}
+                {can("siswa_write") && d.status === "pending_verification" && <button className="btn-ghost btn-sm text-red-600" title="Tolak dokumen" onClick={() => reject(d)} data-testid={`doc-reject-${d.jenis.replace(/\s+/g, "-").toLowerCase()}`}><X size={14} /></button>}
                 {can("siswa_write") && <button className="btn-ghost btn-sm" onClick={() => openUpload(d)} data-testid={`doc-upload-${d.jenis.replace(/\s+/g, "-").toLowerCase()}`}><Upload size={14} /></button>}
                 {can("siswa_write") && d.status === "tersedia" && <button className="btn-ghost btn-sm text-red-600" onClick={() => unset(d)}><Trash2 size={14} /></button>}
               </li>))}</ul></div>

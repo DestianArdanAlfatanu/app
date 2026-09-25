@@ -1,7 +1,9 @@
 import { useState } from "react";
-import { Download, Printer } from "lucide-react";
+import { Download, Printer, FileSpreadsheet, FileText } from "lucide-react";
+import { toast } from "sonner";
 import { useApi } from "@/hooks/useApi";
 import { useAuth } from "@/context/AuthContext";
+import { api, errMsg } from "@/lib/api";
 import { PageHeader, Tabs, Loading, Money, EmptyState } from "@/components/common";
 import { downloadCSV, rupiah, STATUS_LABELS, fmtDate } from "@/lib/format";
 
@@ -12,8 +14,12 @@ export default function ReportsPage() {
   const tabs = all.filter((t) => t.roles.includes(user.role));
   const [tab, setTab] = useState(tabs[0]?.key);
   const [range, setRange] = useState({ dari: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10), sampai: new Date().toISOString().slice(0, 10) });
-  const path = { siswa: "/reports/students", keuangan: `/reports/finance?dari=${range.dari}&sampai=${range.sampai}`, sdm: "/reports/hr", pelatihan: "/reports/training" }[tab];
-  const { data, loading } = useApi(path, [tab, range.dari, range.sampai]);
+  const [page, setPage] = useState(1);
+  const limit = 200;
+  const path = { siswa: `/reports/students?page=${page}&limit=${limit}`, keuangan: `/reports/finance?dari=${range.dari}&sampai=${range.sampai}`, sdm: "/reports/hr", pelatihan: `/reports/training?page=${page}&limit=${limit}` }[tab];
+  const { data, loading, setData } = useApi(path, [tab, range.dari, range.sampai, page]);
+  const changeTab = (t) => { if (t !== tab) { setData(null); setTab(t); setPage(1); } };
+  const totalPages = data?.total ? Math.max(1, Math.ceil(data.total / (data.limit || limit))) : 1;
 
   const exportRows = () => {
     if (!data) return;
@@ -21,14 +27,38 @@ export default function ReportsPage() {
     downloadCSV(rows, `laporan-${tab}-${new Date().toISOString().slice(0, 10)}.csv`);
   };
 
+  const exportFile = async (format) => {
+    try {
+      const params = new URLSearchParams({ format });
+      if (tab === "keuangan") { params.set("dari", range.dari); params.set("sampai", range.sampai); }
+      const r = await api.get(`/reports/${tab}/export?${params.toString()}`, { responseType: "blob" });
+      const url = URL.createObjectURL(new Blob([r.data]));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `laporan-${tab}-${new Date().toISOString().slice(0, 10)}.${format === "xlsx" ? "xlsx" : "pdf"}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`File ${format.toUpperCase()} berhasil diunduh.`);
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+
   return (
     <div>
-      <PageHeader title="Laporan" jp="レポート" subtitle="Laporan otomatis dari data yang sama — ekspor ke Excel (CSV) atau cetak PDF.">
-        <button className="btn-outline" onClick={() => window.print()} data-testid="print-report-btn"><Printer size={16} />Cetak / PDF</button>
-        <button className="btn-primary" onClick={exportRows} data-testid="export-report-btn"><Download size={16} />Ekspor Excel (CSV)</button>
+      <PageHeader title="Laporan" jp="レポート" subtitle="Laporan otomatis dari data yang sama — Excel, PDF, CSV, atau cetak.">
+        <button className="btn-outline" onClick={() => window.print()} data-testid="print-report-btn"><Printer size={16} />Cetak</button>
+        <button className="btn-outline" onClick={exportRows} data-testid="csv-report-btn"><Download size={16} />CSV</button>
+        <button className="btn-outline" onClick={() => exportFile("pdf")} data-testid="pdf-report-btn"><FileText size={16} />Ekspor PDF</button>
+        <button className="btn-primary" onClick={() => exportFile("xlsx")} data-testid="export-report-btn"><FileSpreadsheet size={16} />Ekspor Excel (.xlsx)</button>
       </PageHeader>
-      <div className="no-print"><Tabs active={tab} onChange={setTab} testPrefix="report-tab" tabs={tabs} /></div>
+      <div className="no-print"><Tabs active={tab} onChange={changeTab} testPrefix="report-tab" tabs={tabs} /></div>
       {tab === "keuangan" && <div className="flex gap-2 mb-4 no-print"><input type="date" className="input w-44" data-testid="report-dari-input" value={range.dari} onChange={(e) => setRange({ ...range, dari: e.target.value })} /><input type="date" className="input w-44" data-testid="report-sampai-input" value={range.sampai} onChange={(e) => setRange({ ...range, sampai: e.target.value })} /></div>}
+      {(tab === "siswa" || tab === "pelatihan") && (data?.total || 0) > limit && (
+        <div className="flex items-center gap-2 mb-4 no-print text-sm">
+          <button className="btn-outline btn-sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)} data-testid="report-prev-btn">‹ Sebelumnya</button>
+          <span className="text-slate-500">Halaman {data.page || page} dari {totalPages} · {data.total} baris</span>
+          <button className="btn-outline btn-sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)} data-testid="report-next-btn">Berikutnya ›</button>
+        </div>
+      )}
       {loading && !data ? <Loading /> : !data ? null : (
         <div className="print-area fade-up" data-testid={`report-${tab}`}>
           {tab === "siswa" && (<>

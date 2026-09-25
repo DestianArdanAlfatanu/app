@@ -8,9 +8,10 @@ import { METODE, rupiah, today } from "@/lib/format";
 export const PaymentDialog = ({ open, onOpenChange, student, students, onSaved }) => {
   const { data: accounts } = useApi("/finance/accounts", [], open);
   const [f, setF] = useState({ student_id: "", nominal: "", tanggal: today(), metode: "cash", jenis: "Cicilan", no_transaksi: "", account_id: "", catatan: "", bukti: null });
+  const [idemKey, setIdemKey] = useState("");
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => { if (open) setF((x) => ({ ...x, student_id: student?.id || "", nominal: "", no_transaksi: "", catatan: "", bukti: null, tanggal: today() })); }, [open, student]);
+  useEffect(() => { if (open) { setF((x) => ({ ...x, student_id: student?.id || "", nominal: "", no_transaksi: "", catatan: "", bukti: null, tanggal: today() })); setIdemKey(typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`); } }, [open, student]);
   useEffect(() => { if (accounts?.length && !f.account_id) setF((x) => ({ ...x, account_id: accounts[0].id })); }, [accounts, f.account_id]);
 
   const sel = student || (students || []).find((s) => s.id === f.student_id);
@@ -20,8 +21,8 @@ export const PaymentDialog = ({ open, onOpenChange, student, students, onSaved }
     try {
       let bukti_file_id = null;
       if (f.bukti) { const fd = new FormData(); fd.append("file", f.bukti); bukti_file_id = (await api.post("/upload", fd)).data.id; }
-      const { data } = await api.post("/payments", { ...f, nominal: Number(f.nominal), bukti_file_id, bukti: undefined });
-      toast.success(`Pembayaran ${rupiah(data.nominal)} tercatat · ${data.no_kwitansi}`);
+      const { data } = await api.post("/payments", { ...f, nominal: Number(f.nominal), bukti_file_id, bukti: undefined, idem_key: idemKey });
+      toast.success(`${data.duplicate ? "Duplikat terdeteksi — memakai data tersimpan" : "Pembayaran"} ${rupiah(data.nominal)} tercatat · ${data.no_kwitansi}`);
       onOpenChange(false); onSaved && onSaved(data);
     } catch (e) { toast.error(errMsg(e)); } finally { setSaving(false); }
   };

@@ -1,18 +1,21 @@
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Users, BookOpen, ClipboardCheck, GraduationCap, Wallet, Landmark, Briefcase, UserCog, FileBarChart, History, ShieldCheck, X } from "lucide-react";
+import { LayoutDashboard, Users, BookOpen, ClipboardCheck, GraduationCap, Wallet, Landmark, ReceiptText, Briefcase, UserCog, FileBarChart, History, ShieldCheck, X, PhoneCall, Plane } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, mod: "dashboard", end: true },
   { section: "Siswa" },
   { to: "/siswa", label: "Data Siswa", icon: Users, mod: "siswa" },
+  { to: "/followup", label: "Follow-up Calon", icon: PhoneCall, mod: "followup" },
   { to: "/kelas", label: "Kelas & Jadwal", icon: BookOpen, mod: "kelas" },
   { to: "/absensi", label: "Absensi", icon: ClipboardCheck, mod: "absensi" },
   { to: "/nilai", label: "Nilai & Ujian", icon: GraduationCap, mod: "nilai" },
   { to: "/job-order", label: "Job Order Jepang", icon: Briefcase, mod: "joborder" },
+  { to: "/departure", label: "Keberangkatan", icon: Plane, mod: "departure" },
   { section: "Keuangan" },
   { to: "/pembayaran", label: "Pembayaran Siswa", icon: Wallet, mod: "pembayaran" },
   { to: "/keuangan", label: "Kas & Keuangan", icon: Landmark, mod: "keuangan" },
+  { to: "/pengajuan", label: "Pengajuan Biaya", icon: ReceiptText, mod: "expense" },
   { section: "Manajemen" },
   { to: "/sdm", label: "Guru & Karyawan", icon: UserCog, mod: "sdm" },
   { to: "/laporan", label: "Laporan", icon: FileBarChart, mod: "laporan" },
