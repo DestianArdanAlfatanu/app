@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useApi } from "@/hooks/useApi";
-import { api, errMsg } from "@/lib/api";
+import { api, errMsg, showBlob, TOKEN_KEY } from "@/lib/api";
 import { PageHeader, Loading, Money, EmptyState, Field } from "@/components/common";
 import { rupiah, STATUS_LABELS, fmtDate } from "@/lib/format";
 
@@ -118,9 +118,7 @@ export function PortalDocuments() {
       const blob = r.data instanceof Blob
         ? r.data
         : new Blob([r.data], { type: r.headers?.["content-type"] || "application/octet-stream" });
-      const url = URL.createObjectURL(blob);
-      window.open(url, "_blank", "noopener");
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      showBlob(blob, r.headers);
     } catch (e) { toast.error("Gagal membuka dokumen"); }
   };
   const upload = async (d, f) => {
@@ -211,7 +209,9 @@ export function PortalSettings() {
   const savePw = async () => {
     setSaving(true);
     try {
-      await api.post("/student/auth/change-password", pw);
+      const { data } = await api.post("/student/auth/change-password", pw);
+      // Server mencabut token lama dan memberi token baru untuk sesi ini.
+      if (data?.token) localStorage.setItem(TOKEN_KEY, data.token);
       toast.success("Password berhasil diganti");
       setPw({ old_password: "", new_password: "" });
       if (me?.must_change_password) nav("/portal");

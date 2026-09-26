@@ -7,7 +7,9 @@ from zoneinfo import ZoneInfo
 
 import bcrypt
 import jwt
-from fastapi import Request, HTTPException, Depends, Query
+from urllib.parse import quote
+
+from fastapi import Request, HTTPException, Depends, Query, Response
 from pg_mongo import PgClient
 
 client = PgClient(os.environ["DATABASE_URL"])
@@ -28,6 +30,19 @@ DOC_TYPES = [
 ]
 JLPT_ORDER = {"-": 0, "N5": 1, "N4": 2, "N3": 3, "N2": 4, "N1": 5}
 JWT_ALGORITHM = "HS256"
+# Mode demo/dev: seed akun demo, tombol dokumentasi API. Jangan aktifkan di production.
+DEMO_MODE = os.environ.get("LPK_DEMO", "").lower() in ("1", "true", "yes")
+WEAK_SECRETS = {"change-me", "changeme", "secret", "jwt-secret"}
+
+
+def check_security_config() -> None:
+    """Hentikan startup bila konfigurasi keamanan lemah (dipanggil dari server.py)."""
+    secret = os.environ.get("JWT_SECRET", "")
+    if len(secret) < 32 or secret.lower() in WEAK_SECRETS:
+        raise RuntimeError("JWT_SECRET wajib diisi minimal 32 karakter acak (mis. `openssl rand -hex 32`)")
+    origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+    if "*" in origins:
+        raise RuntimeError("CORS_ORIGINS tidak boleh '*'; isi dengan origin frontend, mis. https://lpk.example.com")
 # Zona waktu bisnis untuk "hari ini" (tanggal transaksi, absensi, jatuh tempo). Timestamp tetap disimpan UTC.
 BUSINESS_TZ = ZoneInfo(os.environ.get("LPK_TZ", "Asia/Jakarta"))
 
@@ -99,20 +114,22 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(user_id: str, email: str, role: str) -> str:
-    payload = {"sub": user_id, "email": email, "role": role, "type": "access",
-               "exp": datetime.now(timezone.utc) + timedelta(hours=12)}
+def create_access_token(user: dict) -> str:
+    """JWT 12 jam. `tv` (token_version) memungkinkan semua token user dicabut (logout, ganti password)."""
+    payload = {"sub": user["id"], "email": user["email"], "role": user["role"], "type": "access",
+               "tv": user.get("token_version", 0), "exp": datetime.now(timezone.utc) + timedelta(hours=12)}
     return jwt.encode(payload, os.environ["JWT_SECRET"], algorithm=JWT_ALGORITHM)
 
 
-def create_refresh_token(user_id: str) -> str:
-    payload = {"sub": user_id, "type": "refresh", "exp": datetime.now(timezone.utc) + timedelta(days=7)}
-    return jwt.encode(payload, os.environ["JWT_SECRET"], algorithm=JWT_ALGORITHM)
+async def revoke_tokens(user_id: str) -> None:
+    """Cabut semua token user yang sudah terbit."""
+    await db.users.update_one({"id": user_id}, {"$inc": {"token_version": 1}})
 
 
 def public_user(user: dict) -> dict:
     user = clean(dict(user))
     user.pop("password_hash", None)
+    user.pop("token_version", None)
     return user
 
 
@@ -128,15 +145,15 @@ async def user_from_token(token: str) -> dict:
     user = await db.users.find_one({"id": payload["sub"]})
     if not user or not user.get("aktif", True):
         raise HTTPException(status_code=401, detail="Pengguna tidak ditemukan")
+    if payload.get("tv", 0) != user.get("token_version", 0):
+        raise HTTPException(status_code=401, detail="Sesi berakhir, silakan login kembali")
     return public_user(user)
 
 
 async def get_current_user(request: Request) -> dict:
-    token = request.cookies.get("access_token")
-    if not token:
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
+    # Hanya header Authorization; cookie tidak dipakai supaya request lintas situs (CSRF) tidak terautentikasi.
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header[7:] if auth_header.startswith("Bearer ") else None
     if not token:
         raise HTTPException(status_code=401, detail="Belum login")
     return await user_from_token(token)
@@ -223,6 +240,24 @@ async def log_audit(entity: str, entity_id: str, action: str, user: dict, before
     })
 
 
+def file_response(data: bytes, rec: dict) -> Response:
+    """Sajikan file unggahan dengan aman: hanya PDF/gambar yang boleh tampil inline; tipe lain
+    (mis. HTML/SVG lama) dipaksa diunduh dan disandbox supaya tidak bisa menjalankan skrip."""
+    from document_storage import EXT_CONTENT_TYPES
+    ct = rec.get("content_type") or ""
+    name = quote(rec.get("original_filename") or "file")
+    headers = {"X-Content-Type-Options": "nosniff"}
+    if ct in set(EXT_CONTENT_TYPES.values()):
+        headers["Content-Disposition"] = f"inline; filename*=UTF-8''{name}"
+        if ct != "application/pdf":
+            headers["Content-Security-Policy"] = "sandbox; default-src 'none'; img-src 'self'"
+    else:
+        ct = "application/octet-stream"
+        headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{name}"
+        headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
+    return Response(content=data, media_type=ct, headers=headers)
+
+
 async def save_upload(file, user: dict, folder: str, allowed_exts=None, scope: str = None) -> dict:
     """Simpan file upload ke LocalDocumentStorage milik server (lihat document_storage.py).
 
@@ -240,7 +275,8 @@ async def save_upload(file, user: dict, folder: str, allowed_exts=None, scope: s
         raise HTTPException(status_code=400, detail="File kosong")
     if len(data) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=400, detail="Ukuran file maksimal 10MB")
-    content_type = EXT_CONTENT_TYPES.get(ext) or file.content_type or "application/octet-stream"
+    # Content-type selalu dari ekstensi, tidak pernah dari klien (klien bisa mengirim text/html).
+    content_type = EXT_CONTENT_TYPES.get(ext) or "application/octet-stream"
     file_id = new_id()
     owner = sanitize_component(scope or user["id"])
     key = f"{sanitize_component(folder)}/{owner}/{file_id}.{ext}"

@@ -537,6 +537,11 @@ def _export_cols(tab: str, rows: list) -> list:
     return cols
 
 
+def _safe_cell_text(v: str) -> str:
+    """Cegah formula injection: teks diawali = + - @ tab/CR dianggap formula oleh Excel/Sheets."""
+    return "'" + v if v and v[0] in "=+-@\t\r" else v
+
+
 def _build_xlsx(tab: str, rows: list) -> bytes:
     import io
     from openpyxl import Workbook
@@ -562,7 +567,7 @@ def _build_xlsx(tab: str, rows: list) -> bytes:
             elif v is None:
                 v = "-"
             else:
-                v = str(v)
+                v = _safe_cell_text(str(v))
             ws.cell(row=ri, column=ci, value=v)
     for ci in range(1, len(cols) + 1):
         ws.column_dimensions[ws.cell(row=1, column=ci).column_letter].width = 18

@@ -574,6 +574,9 @@ async def decide_expense(exp_id: str, body: ExpenseDecideIn, user: dict = Depend
         raise HTTPException(status_code=404, detail="Pengajuan tidak ditemukan")
     if exp["status"] != "diajukan":
         raise HTTPException(status_code=400, detail="Hanya pengajuan yang diajukan yang dapat diputuskan")
+    # Pemisahan tugas: pembuat pengajuan tidak memutuskan pengajuannya sendiri (owner dikecualikan).
+    if exp.get("created_by_id") == user["id"] and user["role"] != "owner":
+        raise HTTPException(status_code=403, detail="Pengajuan milik sendiri harus diputuskan oleh pengguna lain")
     if body.setuju and exp["nominal"] >= EXPENSE_OWNER_THRESHOLD and user["role"] != "owner":
         raise HTTPException(status_code=403, detail="Nominal di atas Rp1.000.000 membutuhkan persetujuan Owner")
     if not body.setuju and not (body.alasan or "").strip():

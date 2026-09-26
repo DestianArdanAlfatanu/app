@@ -1,12 +1,11 @@
 from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, File, Form
-from fastapi.responses import Response as RawResponse
 from pydantic import BaseModel, EmailStr
 
 from core import (db, get_current_user, hash_password, verify_password, create_access_token,
                   new_id, now_iso, today_str, clean, log_audit, payment_summary_map, fee_total,
                   attendance_summary, grade_average, doc_progress, compute_age, save_upload, DOC_TYPES,
-                  login_locked, record_login_failure)
+                  login_locked, record_login_failure, file_response, logger, revoke_tokens)
 from document_storage import storage as doc_storage, ALLOWED_DOC_EXTENSIONS
 
 router = APIRouter()
@@ -72,7 +71,7 @@ def _pay_view(p: dict) -> dict:
 
 
 @router.post("/student/auth/login")
-async def student_login(body: PortalLoginIn, request: Request, response: Response):
+async def student_login(body: PortalLoginIn, request: Request):
     email = body.email.lower().strip()
     ident = f"{request.client.host if request.client else 'x'}:{email}"
     if await login_locked(ident):
@@ -84,16 +83,17 @@ async def student_login(body: PortalLoginIn, request: Request, response: Respons
     if not user.get("aktif", True):
         raise HTTPException(status_code=403, detail="Akun dinonaktifkan")
     await db.login_attempts.delete_one({"identifier": ident})
-    access = create_access_token(user["id"], user["email"], user["role"])
-    response.set_cookie("access_token", access, httponly=True, secure=True, samesite="none", max_age=43200, path="/")
+    access = create_access_token(user)
     await db.users.update_one({"id": user["id"]}, {"$set": {"last_login": now_iso()}})
     out = clean(dict(user))
     out.pop("password_hash", None)
+    out.pop("token_version", None)
     return {"token": access, "user": out}
 
 
 @router.post("/student/auth/logout")
-async def student_logout(response: Response):
+async def student_logout(response: Response, user: dict = Depends(get_current_user)):
+    await revoke_tokens(user["id"])
     response.delete_cookie("access_token", path="/")
     response.delete_cookie("refresh_token", path="/")
     return {"ok": True}
@@ -120,8 +120,10 @@ async def student_change_password(body: PortalPasswordIn, request: Request):
     await db.users.update_one({"id": user["id"]},
                               {"$set": {"password_hash": hash_password(body.new_password),
                                         "must_change_password": False}})
+    # Cabut sesi lain (mis. perangkat yang dicuri) lalu terbitkan token baru untuk sesi ini.
+    await revoke_tokens(user["id"])
     await log_audit("user", user["id"], "password_change", user, None, None)
-    return {"ok": True}
+    return {"ok": True, "token": create_access_token(await db.users.find_one({"id": user["id"]}))}
 
 
 @router.get("/student/dashboard")
@@ -303,13 +305,12 @@ async def student_doc_download(doc_id: str, ctx: dict = Depends(get_current_stud
         raise HTTPException(status_code=404, detail="File tidak ditemukan")
     try:
         data, _ = doc_storage.open(rec["storage_path"])
-        ct = rec.get("content_type") or "application/octet-stream"
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="File tidak ditemukan di penyimpanan server")
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Gagal mengambil file: {e}")
-    return RawResponse(content=data, media_type=rec.get("content_type") or ct,
-                       headers={"Content-Disposition": f'inline; filename="{rec["original_filename"]}"'})
+        logger.error(f"Gagal membaca file dokumen {doc_id}: {e}")
+        raise HTTPException(status_code=502, detail="Gagal mengambil file")
+    return file_response(data, rec)
 
 
 @router.get("/student/departure")

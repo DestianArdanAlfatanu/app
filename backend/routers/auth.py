@@ -2,7 +2,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr
 
-from core import (db, hash_password, verify_password, create_access_token, create_refresh_token, public_user,
+from core import (db, hash_password, verify_password, create_access_token, public_user, revoke_tokens,
                   get_current_user, require_roles, new_id, now_iso, ROLES, clean_list, log_audit,
                   login_locked, record_login_failure)
 from pg_mongo import DuplicateKeyError
@@ -26,13 +26,8 @@ class UserIn(BaseModel):
     aktif: bool = True
 
 
-def set_cookies(response: Response, access: str, refresh: str):
-    response.set_cookie("access_token", access, httponly=True, secure=True, samesite="none", max_age=43200, path="/")
-    response.set_cookie("refresh_token", refresh, httponly=True, secure=True, samesite="none", max_age=604800, path="/")
-
-
 @router.post("/auth/login")
-async def login(body: LoginIn, request: Request, response: Response):
+async def login(body: LoginIn, request: Request):
     email = body.email.lower().strip()
     ident = f"{request.client.host if request.client else 'x'}:{email}"
     if await login_locked(ident):
@@ -46,15 +41,15 @@ async def login(body: LoginIn, request: Request, response: Response):
     if user.get("role") == "student":
         raise HTTPException(status_code=403, detail="Akun siswa, silakan masuk lewat Portal Siswa")
     await db.login_attempts.delete_one({"identifier": ident})
-    access = create_access_token(user["id"], user["email"], user["role"])
-    refresh = create_refresh_token(user["id"])
-    set_cookies(response, access, refresh)
+    access = create_access_token(user)
     await db.users.update_one({"id": user["id"]}, {"$set": {"last_login": now_iso()}})
     return {"token": access, "user": public_user(user)}
 
 
 @router.post("/auth/logout")
-async def logout(response: Response):
+async def logout(response: Response, user: dict = Depends(get_current_user)):
+    await revoke_tokens(user["id"])
+    # Bersihkan cookie sisa versi lama (tidak lagi dipakai untuk autentikasi).
     response.delete_cookie("access_token", path="/")
     response.delete_cookie("refresh_token", path="/")
     return {"ok": True}
@@ -141,6 +136,9 @@ async def update_user(user_id: str, body: UserIn, user: dict = Depends(require_r
         await db.users.update_one({"id": user_id}, {"$set": upd})
     except DuplicateKeyError:
         raise HTTPException(status_code=400, detail="Email sudah terdaftar")
+    # Password, role atau status aktif berubah -> sesi lama user itu tidak boleh terus berlaku.
+    if body.password or body.role != existing["role"] or body.aktif != existing.get("aktif", True):
+        await revoke_tokens(user_id)
     await log_audit("user", user_id, "update", user, {"role": existing["role"], "aktif": existing.get("aktif", True)},
                     {"role": body.role, "aktif": body.aktif})
     return public_user(await db.users.find_one({"id": user_id}))

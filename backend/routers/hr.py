@@ -321,6 +321,8 @@ async def decide_leave(leave_id: str, body: LeaveDecideIn, user: dict = Depends(
         raise HTTPException(status_code=404, detail="Pengajuan cuti tidak ditemukan")
     if lv["status"] != "menunggu":
         raise HTTPException(status_code=400, detail="Pengajuan cuti sudah diproses")
+    if user.get("employee_id") and user["employee_id"] == lv["employee_id"] and user["role"] != "owner":
+        raise HTTPException(status_code=403, detail="Cuti milik sendiri harus diputuskan oleh pengguna lain")
     if not body.setuju and not (body.alasan or "").strip():
         raise HTTPException(status_code=400, detail="Alasan penolakan wajib diisi")
     if body.setuju:

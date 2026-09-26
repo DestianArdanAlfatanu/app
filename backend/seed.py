@@ -2,7 +2,7 @@ import os
 import random
 from datetime import date, timedelta
 
-from core import db, hash_password, verify_password, new_id, now_iso, DOC_TYPES
+from core import db, hash_password, new_id, now_iso, DOC_TYPES, DEMO_MODE
 
 random.seed(7)
 
@@ -12,14 +12,17 @@ def d(days_ago: int) -> str:
 
 
 async def seed_admin():
+    """Buat akun owner pertama saja. Password yang sudah diganti owner tidak pernah ditimpa saat restart."""
+    if await db.users.find_one({"role": "owner"}, {"_id": 0, "id": 1}):
+        return
     email = os.environ["ADMIN_EMAIL"].lower()
     pw = os.environ["ADMIN_PASSWORD"]
-    existing = await db.users.find_one({"email": email})
-    if not existing:
-        await db.users.insert_one({"id": new_id(), "email": email, "password_hash": hash_password(pw), "name": "Owner LPK",
-                                   "role": "owner", "aktif": True, "created_at": now_iso()})
-    elif not verify_password(pw, existing["password_hash"]):
-        await db.users.update_one({"email": email}, {"$set": {"password_hash": hash_password(pw)}})
+    if len(pw) < 8 and not DEMO_MODE:
+        raise RuntimeError("ADMIN_PASSWORD minimal 8 karakter untuk membuat akun owner pertama")
+    if await db.users.find_one({"email": email}, {"_id": 0, "id": 1}):
+        raise RuntimeError(f"ADMIN_EMAIL {email} sudah dipakai akun non-owner; pilih email lain untuk owner")
+    await db.users.insert_one({"id": new_id(), "email": email, "password_hash": hash_password(pw), "name": "Owner LPK",
+                               "role": "owner", "aktif": True, "created_at": now_iso()})
 
 
 async def seed_demo():

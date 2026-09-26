@@ -1,13 +1,12 @@
 import re
 from typing import Optional, List, Dict, Any
-from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Header
-from fastapi.responses import Response
 from pydantic import BaseModel
 
 from core import (db, require_roles, get_current_user, deny_student, new_id, now_iso, today_str, clean, clean_list, log_audit,
                   STUDENT_STATUSES, DOC_TYPES, payment_summary_map, fee_total, attendance_summary, grade_average,
-                  doc_progress, compute_age, save_upload, user_from_token, ensure_guru_student, parse_date)
+                  doc_progress, compute_age, save_upload, user_from_token, ensure_guru_student, parse_date,
+                  file_response, logger, ensure_guru_class)
 from document_storage import storage as doc_storage, ALLOWED_DOC_EXTENSIONS
 
 router = APIRouter()
@@ -169,9 +168,12 @@ async def list_students(status: Optional[str] = None, q: Optional[str] = None, c
         query["class_id"] = class_id
     if q:
         query["$or"] = [{"nama_lengkap": {"$regex": re.escape(q), "$options": "i"}}, {"nik": {"$regex": re.escape(q)}}, {"no_hp": {"$regex": re.escape(q)}}]
-    if user["role"] == "guru" and not class_id:
-        emp_classes = await db.classes.find({"guru_id": user.get("employee_id")}, {"_id": 0, "id": 1}).to_list(None)
-        query["class_id"] = {"$in": [c["id"] for c in emp_classes]}
+    if user["role"] == "guru":
+        if class_id:
+            await ensure_guru_class(user, class_id)  # guru hanya boleh menyaring kelasnya sendiri
+        else:
+            emp_classes = await db.classes.find({"guru_id": user.get("employee_id")}, {"_id": 0, "id": 1}).to_list(None)
+            query["class_id"] = {"$in": [c["id"] for c in emp_classes]}
     rows = await db.students.find(query, {"_id": 0}).sort("created_at", -1).to_list(None)
     return await enrich(rows, user)
 
@@ -469,20 +471,19 @@ async def download_file(file_id: str, authorization: str = Header(None), auth: s
         raise HTTPException(status_code=403, detail="Anda tidak memiliki akses ke file ini")
     try:
         data, _ = doc_storage.open(rec["storage_path"])
-        ct = rec.get("content_type") or "application/octet-stream"
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="File tidak ditemukan di penyimpanan server")
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Gagal mengambil file: {e}")
-    return Response(content=data, media_type=rec.get("content_type") or ct,
-                    headers={"Content-Disposition": "inline; filename*=UTF-8''" + quote(rec.get("original_filename") or "file")})
+        logger.error(f"Gagal membaca file {file_id}: {e}")
+        raise HTTPException(status_code=502, detail="Gagal mengambil file")
+    return file_response(data, rec)
 
 
 @router.post("/upload")
 async def generic_upload(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
     deny_student(user)
     try:
-        return await save_upload(file, user, "bukti")
+        return await save_upload(file, user, "bukti", allowed_exts=ALLOWED_DOC_EXTENSIONS)
     except HTTPException:
         raise
     except Exception as e:

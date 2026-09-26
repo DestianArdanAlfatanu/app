@@ -89,6 +89,7 @@ async def create_class(body: ClassIn, user: dict = Depends(require_roles("admin"
 
 @router.get("/classes/{class_id}")
 async def get_class(class_id: str, user: dict = Depends(READ)):
+    await ensure_guru_class(user, class_id)
     c = await db.classes.find_one({"id": class_id}, {"_id": 0})
     if not c:
         raise HTTPException(status_code=404, detail="Kelas tidak ditemukan")

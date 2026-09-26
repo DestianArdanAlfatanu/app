@@ -42,7 +42,9 @@ export const METODE = [["cash", "Cash"], ["transfer", "Transfer Bank"], ["qris",
 export function downloadCSV(rows, filename) {
   if (!rows?.length) return;
   const cols = Object.keys(rows[0]);
-  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  // Teks diawali = + - @ dianggap formula oleh Excel (formula injection); beri prefiks apostrof.
+  const neutral = (v) => (typeof v === "string" && /^[=+\-@\t\r]/.test(v) ? `'${v}` : v);
+  const esc = (v) => `"${String(neutral(v) ?? "").replace(/"/g, '""')}"`;
   const csv = [cols.join(","), ...rows.map((r) => cols.map((c) => esc(typeof r[c] === "object" ? JSON.stringify(r[c]) : r[c])).join(","))].join("\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }));

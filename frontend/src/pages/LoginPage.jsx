@@ -3,6 +3,8 @@ import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { errMsg } from "@/lib/api";
 
+// Akun demo hanya untuk lingkungan dev (REACT_APP_DEMO=1); tidak ikut di build production.
+const SHOW_DEMO = process.env.REACT_APP_DEMO === "1";
 const DEMO = [
   ["Owner", "owner@lpk.id", "owner123"], ["Admin", "admin@lpk.id", "password123"], ["Keuangan", "finance@lpk.id", "password123"],
   ["HR", "hr@lpk.id", "password123"], ["Guru", "guru@lpk.id", "password123"], ["Marketing", "marketing@lpk.id", "password123"],
@@ -54,7 +56,7 @@ export default function LoginPage() {
             {err && <p data-testid="login-error" className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-md px-3 py-2">{err}</p>}
             <button data-testid="login-submit-btn" className="btn-red w-full h-11" disabled={loading}>{loading ? "Memproses..." : "Masuk"}</button>
           </form>
-          <div className="mt-8">
+          {SHOW_DEMO && <div className="mt-8">
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Akun demo</p>
             <div className="grid grid-cols-3 gap-2">
               {DEMO.map(([r, e, p]) => (
@@ -62,7 +64,7 @@ export default function LoginPage() {
                   className="btn-outline btn-sm justify-start text-slate-600">{r}</button>
               ))}
             </div>
-          </div>
+          </div>}
         </div>
       </div>
     </div>

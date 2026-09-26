@@ -1571,6 +1571,7 @@ def portal_ready(portal_pair):
                       json={"old_password": "portal123", "new_password": "baru1234"})
     if r.status_code == 200:
         pa["password"] = "baru1234"
+        pa["token"] = r.json()["token"]  # token lama dicabut saat ganti password
     return portal_pair
 
 
@@ -1616,7 +1617,9 @@ class TestStudentPortalAuth:
         r = requests.post(f"{API}/student/auth/change-password", headers=_ph(tok),
                           json={"old_password": "portal123", "new_password": "baru1234"}, timeout=30)
         assert r.status_code == 200, r.text
-        assert requests.get(f"{API}/student/dashboard", headers=_ph(tok), timeout=30).status_code == 200
+        # Ganti password mencabut token lama dan memberi token baru untuk sesi ini.
+        assert requests.get(f"{API}/student/dashboard", headers=_ph(tok), timeout=30).status_code == 401
+        assert requests.get(f"{API}/student/dashboard", headers=_ph(r.json()["token"]), timeout=30).status_code == 200
         r = _portal_login(portal_pair["PA"]["email"], "baru1234")
         assert r.status_code == 200
         assert r.json()["user"]["must_change_password"] is False
@@ -1624,8 +1627,14 @@ class TestStudentPortalAuth:
         portal_pair["PA"]["password"] = "baru1234"
 
     def test_logout(self, portal_pair):
-        tok = portal_pair["PA"].get("token")
+        pa = portal_pair["PA"]
+        tok = pa.get("token")
         assert requests.post(f"{API}/student/auth/logout", headers=_ph(tok), timeout=30).status_code == 200
+        # Logout mencabut token; token lama tidak berlaku lagi.
+        assert requests.get(f"{API}/student/auth/me", headers=_ph(tok), timeout=30).status_code == 401
+        r = _portal_login(pa["email"], pa.get("password", "portal123"))
+        assert r.status_code == 200, r.text
+        pa["token"] = r.json()["token"]
 
 
 class TestStudentPortalRBAC:

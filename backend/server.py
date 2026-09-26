@@ -10,13 +10,17 @@ import logging
 from fastapi import FastAPI, APIRouter
 from starlette.middleware.cors import CORSMiddleware
 
-from core import db, client, logger
+from core import db, client, logger, check_security_config, DEMO_MODE
 from seed import seed_admin, seed_demo
 from routers import auth, students, academics, finance, hr, jobs, dashboard, whatsapp, portal, collections, candidate_followups, departures
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="Sistem LPK Jepang")
+check_security_config()
+
+# Dokumentasi API interaktif hanya di mode demo/dev; di production tidak membuka peta endpoint.
+app = FastAPI(title="Sistem LPK Jepang", docs_url="/docs" if DEMO_MODE else None,
+              redoc_url="/redoc" if DEMO_MODE else None, openapi_url="/openapi.json" if DEMO_MODE else None)
 api_router = APIRouter(prefix="/api")
 
 
@@ -29,10 +33,20 @@ for r in (auth, students, academics, finance, hr, jobs, dashboard, whatsapp, por
     api_router.include_router(r.router)
 app.include_router(api_router)
 
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_credentials=False,  # autentikasi lewat header Authorization, bukan cookie
+    # Tanpa CORS_ORIGINS tidak ada origin lain yang diizinkan (check_security_config menolak "*").
+    allow_origins=[o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -98,10 +112,10 @@ async def startup():
     await db.departure_checklist.create_index("requirement_code")
     await db.login_attempts.create_index("identifier")
     await seed_admin()
-    if os.environ.get("LPK_DISABLE_STARTUP_DEMO_SEED", "").lower() not in ("1", "true", "yes"):
+    if DEMO_MODE:
         await seed_demo()
     else:
-        logger.info("Startup demo seed disabled via LPK_DISABLE_STARTUP_DEMO_SEED")
+        logger.info("Seed akun demo dilewati (aktifkan hanya untuk dev dengan LPK_DEMO=1)")
     try:
         from routers.whatsapp import seed_templates
         await seed_templates()
