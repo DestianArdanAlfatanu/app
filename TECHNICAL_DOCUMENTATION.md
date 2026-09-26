@@ -15,9 +15,9 @@ Browser (React SPA, 2 shell: Staff & Student Portal)
    ↓ HTTPS/JSON (axios, JWT Bearer + cookie)
 Backend API (FastAPI, router per domain, prefix /api)
    ↓ business/domain logic (Python, di dalam router + core.py)
-MongoDB (Motor async; 32 collection; index unik/parsial)
+PostgreSQL (adapter `pg_mongo`: tabel JSONB per koleksi; index unik/parsial)
    ↓
-LocalDocumentStorage (filesystem server; metadata di MongoDB)
+LocalDocumentStorage (filesystem server; metadata di PostgreSQL)
 ```
 
 **Karakter utama yang terbukti dari kode:**
@@ -44,7 +44,7 @@ LocalDocumentStorage (filesystem server; metadata di MongoDB)
 | Frontend notifikasi | sonner | 2.0.3 | Toast sukses/gagal | `frontend/package.json`, halaman + `components/ui/sonner.jsx` |
 | Backend | FastAPI | 0.110.1 | HTTP API, routing, validasi, dependency injection | `backend/requirements.txt`, `backend/server.py` |
 | Backend runtime | uvicorn | 0.25.0 | ASGI server | `backend/requirements.txt` |
-| Database | MongoDB (via Motor async) | Motor 3.3.1 / pymongo 4.6.3 | Penyimpanan utama (dokumen JSON, UUID string) | `backend/requirements.txt`, `backend/core.py:13-14` |
+| Database | PostgreSQL 15+ (via asyncpg + adapter `pg_mongo`) | asyncpg ≥ 0.29 | Penyimpanan utama (dokumen JSONB, UUID string) | `backend/requirements.txt`, `backend/core.py`, `backend/pg_mongo.py` |
 | Validasi backend | Pydantic | ≥2.6.4 | Model `*In` per endpoint | `backend/requirements.txt`, semua `routers/*.py` |
 | Auth token | PyJWT (HS256) | ≥2.10.1 | JWT access (12 jam) + refresh (7 hari) | `backend/requirements.txt`, `backend/core.py:91-99` |
 | Password | bcrypt | 4.1.3 | Hash + verifikasi password | `backend/requirements.txt`, `backend/core.py:80-88` |
@@ -57,7 +57,6 @@ LocalDocumentStorage (filesystem server; metadata di MongoDB)
 | Penyimpanan file | Custom `LocalDocumentStorage` (stdlib: `pathlib`, `os.replace`, `re`) | — (kode sendiri) | Binary dokumen di filesystem server | `backend/document_storage.py` |
 | Runtime/infra | Proses uvicorn + static build frontend; tanpa Dockerfile di repo | — | Operasi lokal/server | Tidak ada `Dockerfile`; `.gitignore` mengabaikan `.env`, `backend/storage/` |
 
-**Catatan legacy (BUKAN alur aktif):** `backend/core.py:158-191` masih berisi helper object-storage eksternal (`init_storage`/`put_object`/`get_object` ke `integrations.emergentagent.com`, membutuhkan `EMERGENT_LLM_KEY`). Helper ini **tidak lagi dipakai** oleh alur upload/download/preview dokumen mana pun (semua sudah ke `LocalDocumentStorage`). Pemanggilan `init_storage()` di `server.py` hanya log "gagal init" non-fatal saat key tidak ada. Dokumentasi ini menyebutkannya hanya agar tidak disangka fitur aktif.
 
 **Dependency yang tercatat di manifest tetapi TIDAK ditemukan import/pemakaiannya di kode** (sehingga tidak diklaim sebagai library aktif dan tidak masuk katalog): `boto3`, `requests-oauthlib`, `passlib`, `python-jose`, `cryptography`, `tzdata`, `pandas`, `numpy`, `jq`, `typer`, `black`, `isort`, `flake8`, `mypy` (backend); `@tanstack/react-query`, `swr`, `zod`, `@hookform/resolvers`, `framer-motion`, `dayjs`, `date-fns`, `cmdk`, `embla-carousel-react`, `vaul`, `next-themes`, `input-otp`, `react-day-picker`, `react-resizable-panels`, sebagian besar `@radix-ui/*`, `react-hook-form` (hanya dipakai file generated `components/ui/form.jsx` yang tidak diimpor halaman aplikasi). Pengecualian: `react-hook-form` tetap tercantum di tabel frontend sebagai "tersedia, tidak dipakai alur aplikasi".
 
@@ -97,7 +96,7 @@ LocalDocumentStorage (filesystem server; metadata di MongoDB)
 |---|---|---|---|---|
 | FastAPI | 0.110.1 | Routing (`APIRouter` per domain), DI (`Depends`), error `HTTPException` | 12 router di `server.py:27`, ±161 handler | Struktur API modular per domain bisnis |
 | uvicorn | 0.25.0 | Menjalankan ASGI app | Runtime `server:app` | Server async produksi/dev yang sederhana |
-| motor | 3.3.1 (+ pymongo 4.6.3) | Akses MongoDB async; `pymongo.errors.DuplicateKeyError` untuk idempotency race | `core.py:13`, `finance.py:262`, `hr.py:638` | I/O database non-blocking; konflik konkurensi dipetakan ke respons deterministik |
+| asyncpg | ≥ 0.29 | Akses PostgreSQL async lewat adapter `pg_mongo`; `pg_mongo.DuplicateKeyError` untuk idempotency race | `core.py`, `pg_mongo.py`, `finance.py`, `hr.py` | I/O database non-blocking; konflik konkurensi dipetakan ke respons deterministik |
 | pydantic | ≥2.6.4 | Skema `*In` (Login, Payment, Payroll, Expense, Interview, dsb.) | Semua router | Validasi input terpusat + pesan error konsisten |
 | PyJWT | ≥2.10.1 | Encode/decode JWT HS256 | `core.py:91-120` | Token stateless tanpa session store |
 | bcrypt | 4.1.3 | Hash (`gensalt`) & `checkpw` | `core.py:80-88`, `routers/auth.py`, `routers/portal.py` | Password tidak pernah tersimpan plain-text |
@@ -113,7 +112,7 @@ LocalDocumentStorage (filesystem server; metadata di MongoDB)
 
 ## 5. Database & Data Architecture
 
-- **Teknologi:** MongoDB. Koneksi: `AsyncIOMotorClient(os.environ["MONGO_URL"])`, database dari `os.environ["DB_NAME"]` (`backend/core.py:13-14`). Akses async penuh via Motor.
+- **Teknologi:** PostgreSQL. Koneksi: `PgClient(os.environ["DATABASE_URL"])` (`backend/core.py`). Tiap koleksi disimpan sebagai tabel `(_pk, _seq, doc jsonb)`; `backend/pg_mongo.py` menyediakan API bergaya Motor (find/update/aggregate/index unik) sehingga router tidak menulis SQL manual. Akses async penuh via asyncpg.
 - **Model data:** koleksi dokumen JSON dengan `id` UUID string (`new_id()`), `created_at` ISO (`now_iso()`), soft-delete `is_deleted` pada dokumen/file. Tidak ada ODM/migrasi — skema dijaga oleh Pydantic + pola kode; index dibuat idempoten setiap startup.
 
 **Collection yang terbukti dipakai (32):** `users`, `students`, `employees`, `employee_attendances`, `leaves`, `payrolls`, `classes`, `attendance`, `grades`, `exams`, `selections`, `payments`, `transactions`, `accounts`, `expenses`, `reconciliations`, `counters`, `documents`, `files`, `job_orders`, `jobs` (baca fallback legacy di `departures.py:128,228`), `interviews`, `departure_profiles`, `departure_checklist`, `collection_activities`, `candidate_followups`, `notifications`, `whatsapp_templates`, `whatsapp_messages`, `whatsapp_events`, `audit_logs`, `login_attempts`.
@@ -218,7 +217,7 @@ Browser: React SPA — shell Staff (17 rute) + shell Portal (7 rute)
    ↓ axios (Bearer/cookie, errMsg, fileUrl) → /api/*
 FastAPI: 12 APIRouter domain; Depends(get_current_user / require_roles / get_current_student)
    ↓ domain logic di router + helper core.py (aggregasi, snapshot, readiness, notifikasi)
-MongoDB (Motor async; UUID string; index unik/parsial)
+PostgreSQL (JSONB via `pg_mongo`; UUID string; index unik/parsial)
 LocalDocumentStorage (binary) + db.files/documents (metadata)
 Keluar: WhatsApp Cloud API via requests (E1, template+antrean)
 ```
@@ -244,7 +243,7 @@ Authentication (bcrypt, JWT 12j/7h, rate-limit, must-change-password)
 **Masalah:** Gaji dihitung dari data master yang terus berubah; tanpa snapshot, slip bulan lalu ikut berubah. Persetujuan dan pembayaran tercampur sehingga kas bisa tercatat ganda.
 **Solusi:** Hitung → draft (snapshot beku) → approve (owner-only) → pay (finance-only) → transaksi kas terhubung.
 **Cara kerja:** `POST /payrolls/calculate` (mendukung `preview` tanpa tulis) menghitung prorata hari aktif kalender, potongan alfa, lembur/bonus ber-reason, potongan ber-`source_ref`; melewatkan karyawan yang sudah punya slip periode itu (skip, bukan 500). Koreksi draft wajib alasan dan mengaudit before/after penuh.
-**Teknologi:** `routers/hr.py:345-763`, Motor, `DuplicateKeyError`, `counters` (nomor slip), `log_audit`.
+**Teknologi:** `routers/hr.py:345-763`, `pg_mongo`, `DuplicateKeyError`, `counters` (nomor slip), `log_audit`.
 **Nilai operasional:** Slip historis konsisten; segregasi tugas (HR hitung, owner setujui, finance bayar); double-pay mustahil.
 **Bukti:** `hr.py` (`_calc_one`, `_active_window`, `calculate_payrolls`, `approve_payroll`, `pay_payroll`).
 
@@ -293,7 +292,7 @@ Authentication (bcrypt, JWT 12j/7h, rate-limit, must-change-password)
 ### 11.7 Local Document Storage
 
 **Masalah:** Ketergantungan object-storage eksternal + credential; file di `/tmp`/browser hilang saat restart; URL publik berisiko.
-**Solusi:** Abstraksi `DocumentStorage` + implementasi `LocalDocumentStorage`: binary di filesystem server persisten, metadata di MongoDB.
+**Solusi:** Abstraksi `DocumentStorage` + implementasi `LocalDocumentStorage`: binary di filesystem server persisten, metadata di PostgreSQL.
 **Teknologi:** `document_storage.py` (allowlist ekstensi, MIME kanonis, 10MB, atomic tmp+rename, traversal guard), `core.save_upload()`, `.gitignore: backend/storage/`.
 **Nilai:** Tanpa credential eksternal; selamat dari restart; siap diganti object-storage tanpa mengubah bisnis.
 **Bukti:** `document_storage.py`, `core.py:194-231`, `server.py:109-113`.
@@ -393,8 +392,7 @@ Authentication (bcrypt, JWT 12j/7h, rate-limit, must-change-password)
 
 | Library | Version | Category | Function | Where Used | Why It Matters |
 |---|---|---|---|---|---|
-| motor | 3.3.1 | Database | Driver MongoDB async | `core.py`, semua router | I/O non-blocking untuk API konkurensi |
-| pymongo | 4.6.3 | Database | Bawaan Motor; `DuplicateKeyError` dipakai langsung | `finance.py`, `hr.py`, `auth.py` | Konflik race jadi respons deterministik |
+| asyncpg | ≥ 0.29 | Database | Driver PostgreSQL async (dipakai `pg_mongo`) | `pg_mongo.py`, `core.py` | I/O non-blocking untuk API konkurensi |
 
 ### Authentication/Security
 
@@ -446,7 +444,7 @@ Authentication (bcrypt, JWT 12j/7h, rate-limit, must-change-password)
 
 ## 14. Custom Engineering vs Third-Party Libraries
 
-**Disediakan pihak ketiga:** web framework & validasi (FastAPI/Pydantic), driver DB (Motor), HTTP client (axios/requests), auth primitif (JWT/bcrypt), UI primitif (Tailwind/Radix/lucide/sonner/recharts), testing & build (pytest/CRACO).
+**Disediakan pihak ketiga:** web framework & validasi (FastAPI/Pydantic), driver DB (asyncpg), HTTP client (axios/requests), auth primitif (JWT/bcrypt), UI primitif (Tailwind/Radix/lucide/sonner/recharts), testing & build (pytest/CRACO).
 
 **Direkayasa sendiri (nilai inti proyek):**
 
@@ -501,7 +499,6 @@ Authentication (bcrypt, JWT 12j/7h, rate-limit, must-change-password)
 - **Relasi di kode, bukan JOIN DB:** referensi via UUID string + agregasi di Python. Trade-off: fleksibel skema, tetapi query lintas entity berat ditangani manual (limit `to_list` hingga 5000-10000).
 - **WhatsApp best-effort:** kegagalan kirim dicatat di antrean + retry, tidak menggagalkan transaksi bisnis. Trade-off: status pesan eventual-consistent; pengiriman riil bergantung konfigurasi env (`WA_ENABLED`, token, provider).
 - **Preview browser-native:** PDF/gambar mengandalkan viewer browser via MIME kanonis. Trade-off: pengalaman mengikuti kemampuan browser, bukan viewer kustom.
-- **Legacy Emergent storage:** kode helper masih ada tetapi non-aktif; risiko kebingungan pembaca baru — dimitigasi dengan penanda yang jelas (dokumen ini + komentar kode).
 - **Lingkungan operasi:** repository tidak menyertakan Dockerfile/CI; asumsi runtime adalah server lokal (uvicorn + build statis frontend). Trade-off: deployment direproduksi manual per server.
 
 ---

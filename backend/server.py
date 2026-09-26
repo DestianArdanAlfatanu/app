@@ -10,7 +10,7 @@ import logging
 from fastapi import FastAPI, APIRouter
 from starlette.middleware.cors import CORSMiddleware
 
-from core import db, client, init_storage, logger
+from core import db, client, logger
 from seed import seed_admin, seed_demo
 from routers import auth, students, academics, finance, hr, jobs, dashboard, whatsapp, portal, collections, candidate_followups, departures
 
@@ -112,11 +112,6 @@ async def startup():
         logger.info(f"Local document storage siap: {storage_root()}")
     except Exception as e:
         logger.error(f"Local document storage gagal init: {e}")
-    try:
-        init_storage()
-        logger.info("Object storage siap")
-    except Exception as e:
-        logger.error(f"Object storage gagal init: {e}")
 
 
 NOTIF_SYNC_INTERVAL = int(os.environ.get("LPK_NOTIF_SYNC_SECONDS", "300"))

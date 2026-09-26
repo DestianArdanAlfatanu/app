@@ -4,7 +4,7 @@
 "Buatkan saya website untuk menjawab kebutuhan yang ada pada file tersebut" — dokumen kebutuhan sistem terintegrasi LPK: data siswa (pendaftaran → alumni), seleksi, kelas/absensi/nilai/ujian, pembayaran & kwitansi, keuangan (kas, rekening, rekonsiliasi), SDM, job order & matching, dokumen, laporan, audit trail, role & hak akses, notifikasi, search global, mobile responsive.
 
 ## Pilihan User
-- MVP = modul inti (opsi a). Auth JWT email/password, akun dibuat Super Admin. Upload file asli (Emergent Object Storage). Tanpa WhatsApp. Tema terang profesional nuansa Jepang.
+- MVP = modul inti (opsi a). Auth JWT email/password, akun dibuat Super Admin. Upload file asli (penyimpanan lokal server). Tanpa WhatsApp. Tema terang profesional nuansa Jepang.
 
 ## Arsitektur
 - Backend FastAPI `/api` (routers: auth, students, academics, finance, hr, jobs, dashboard), MongoDB (uuid `id`, tanpa ObjectId di respons), JWT (PyJWT + bcrypt), Object Storage via INTEGRATION_PROXY_URL.

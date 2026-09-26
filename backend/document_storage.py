@@ -1,9 +1,8 @@
 """Abstraksi penyimpanan file dokumen (server-local).
 
 Keputusan arsitektur: binary dokumen disimpan di filesystem milik SERVER
-aplikasi (bukan laptop user, bukan browser, bukan MongoDB binary), sedangkan
-database hanya menyimpan metadata. Tidak memakai EMERGENT_LLM_KEY maupun
-credential/service eksternal apa pun.
+aplikasi (bukan laptop user, bukan browser, bukan binary di database), sedangkan
+database hanya menyimpan metadata. Tidak memakai credential/service eksternal apa pun.
 
     business logic (routers/students.py, routers/portal.py)
         -> DocumentStorage (abstraksi)
