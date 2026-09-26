@@ -18,6 +18,8 @@ export default function ReportsPage() {
   const limit = 200;
   const path = { siswa: `/reports/students?page=${page}&limit=${limit}`, keuangan: `/reports/finance?dari=${range.dari}&sampai=${range.sampai}`, sdm: "/reports/hr", pelatihan: `/reports/training?page=${page}&limit=${limit}` }[tab];
   const { data, loading, setData } = useApi(path, [tab, range.dari, range.sampai, page]);
+  // Server menghilangkan kolom uang untuk role tanpa akses keuangan.
+  const showMoney = !data?.rows?.length || "sisa" in data.rows[0];
   const changeTab = (t) => { if (t !== tab) { setData(null); setTab(t); setPage(1); } };
   const totalPages = data?.total ? Math.max(1, Math.ceil(data.total / (data.limit || limit))) : 1;
 
@@ -51,7 +53,7 @@ export default function ReportsPage() {
         <button className="btn-primary" onClick={() => exportFile("xlsx")} data-testid="export-report-btn"><FileSpreadsheet size={16} />Ekspor Excel (.xlsx)</button>
       </PageHeader>
       <div className="no-print"><Tabs active={tab} onChange={changeTab} testPrefix="report-tab" tabs={tabs} /></div>
-      {tab === "keuangan" && <div className="flex gap-2 mb-4 no-print"><input type="date" className="input w-44" data-testid="report-dari-input" value={range.dari} onChange={(e) => setRange({ ...range, dari: e.target.value })} /><input type="date" className="input w-44" data-testid="report-sampai-input" value={range.sampai} onChange={(e) => setRange({ ...range, sampai: e.target.value })} /></div>}
+      {tab === "keuangan" && <div className="flex flex-wrap gap-2 mb-4 no-print"><input type="date" className="input w-44" data-testid="report-dari-input" value={range.dari} onChange={(e) => setRange({ ...range, dari: e.target.value })} /><input type="date" className="input w-44" data-testid="report-sampai-input" value={range.sampai} onChange={(e) => setRange({ ...range, sampai: e.target.value })} /></div>}
       {(tab === "siswa" || tab === "pelatihan") && (data?.total || 0) > limit && (
         <div className="flex items-center gap-2 mb-4 no-print text-sm">
           <button className="btn-outline btn-sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)} data-testid="report-prev-btn">‹ Sebelumnya</button>
@@ -63,11 +65,11 @@ export default function ReportsPage() {
         <div className="print-area fade-up" data-testid={`report-${tab}`}>
           {tab === "siswa" && (<>
             <div className="flex gap-2 flex-wrap mb-4">{Object.entries(data.per_status).map(([k, v]) => <span key={k} className="chip bg-white">{STATUS_LABELS[k]}: <b className="ml-1">{v}</b></span>)}<span className="chip bg-slate-900 text-white border-slate-900">Total: {data.rows.length}</span></div>
-            <div className="table-wrap"><table className="tbl"><thead><tr><th>Nama</th><th>JK/Usia</th><th>Status</th><th>Kelas</th><th>Bahasa</th><th>Tagihan</th><th>Dibayar</th><th>Sisa</th><th>Hadir</th><th>Nilai</th><th>Dok</th></tr></thead>
-              <tbody>{data.rows.map((r, i) => <tr key={i}><td className="font-medium">{r.nama}</td><td>{r.jenis_kelamin}/{r.usia ?? "-"}</td><td>{STATUS_LABELS[r.status]}</td><td>{r.kelas || "-"}</td><td>{r.bahasa}</td><td><Money value={r.total_tagihan} /></td><td><Money value={r.dibayar} /></td><td><Money value={r.sisa} className={r.sisa > 0 ? "text-red-600" : "text-emerald-600"} /></td><td>{r.kehadiran}%</td><td>{r.nilai ?? "-"}</td><td>{r.dokumen}/13</td></tr>)}</tbody></table></div>
+            <div className="table-wrap"><table className="tbl"><thead><tr><th>Nama</th><th>JK/Usia</th><th>Status</th><th>Kelas</th><th>Bahasa</th>{showMoney && <><th>Tagihan</th><th>Dibayar</th><th>Sisa</th></>}<th>Hadir</th><th>Nilai</th><th>Dok</th></tr></thead>
+              <tbody>{data.rows.map((r, i) => <tr key={i}><td className="font-medium">{r.nama}</td><td>{r.jenis_kelamin}/{r.usia ?? "-"}</td><td>{STATUS_LABELS[r.status]}</td><td>{r.kelas || "-"}</td><td>{r.bahasa}</td>{showMoney && <><td><Money value={r.total_tagihan} /></td><td><Money value={r.dibayar} /></td><td><Money value={r.sisa} className={r.sisa > 0 ? "text-red-600" : "text-emerald-600"} /></td></>}<td>{r.kehadiran}%</td><td>{r.nilai ?? "-"}</td><td>{r.dokumen}/13</td></tr>)}</tbody></table></div>
           </>)}
           {tab === "keuangan" && (<>
-            <div className="grid grid-cols-3 gap-3 mb-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
               <div className="card p-4"><p className="label">Pemasukan</p><p className="mono text-xl font-semibold text-emerald-700">{rupiah(data.pemasukan)}</p></div>
               <div className="card p-4"><p className="label">Pengeluaran</p><p className="mono text-xl font-semibold text-red-600">{rupiah(data.pengeluaran)}</p></div>
               <div className="card p-4"><p className="label">Laba / Rugi</p><p className={`mono text-xl font-semibold ${data.laba >= 0 ? "text-emerald-700" : "text-red-600"}`}>{rupiah(data.laba)}</p></div>

@@ -1,7 +1,7 @@
 import { Printer } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { useApi } from "@/hooks/useApi";
-import { fileUrl } from "@/lib/api";
+import { openFile } from "@/lib/api";
 import { rupiah, fmtDate } from "@/lib/format";
 
 export const ReceiptDialog = ({ paymentId, onClose }) => {
@@ -37,7 +37,7 @@ export const ReceiptDialog = ({ paymentId, onClose }) => {
               </div>
             </div>
             <div className="flex justify-between items-center mt-4 no-print">
-              {r.bukti_file_id ? <a href={fileUrl(r.bukti_file_id)} target="_blank" rel="noreferrer" className="btn-outline btn-sm" data-testid="receipt-bukti-link">Lihat bukti pembayaran</a> : <span />}
+              {r.bukti_file_id ? <a href="#" onClick={(e) => { e.preventDefault(); openFile(r.bukti_file_id); }} className="btn-outline btn-sm" data-testid="receipt-bukti-link">Lihat bukti pembayaran</a> : <span />}
               <div className="flex gap-2"><button className="btn-outline" onClick={onClose} data-testid="receipt-close-btn">Tutup</button><button className="btn-primary" onClick={() => window.print()} data-testid="receipt-print-btn"><Printer size={15} />Cetak / PDF</button></div>
             </div>
           </div>

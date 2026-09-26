@@ -9,7 +9,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from pymongo.errors import DuplicateKeyError
+from pg_mongo import DuplicateKeyError
 
 from core import (db, require_roles, new_id, now_iso, today_str, clean, log_audit,
                   payment_summary_map, fee_total)
@@ -85,7 +85,7 @@ async def _sisa_snapshot(s: dict) -> dict:
 
 
 async def _arrears_rows():
-    students = await db.students.find({"status": {"$nin": ["calon_siswa", "gagal", "alumni"]}}, {"_id": 0}).to_list(5000)
+    students = await db.students.find({"status": {"$nin": ["calon_siswa", "gagal", "alumni"]}}, {"_id": 0}).to_list(None)
     pay = await payment_summary_map()
     t = today_str()
     out = []
@@ -107,7 +107,7 @@ async def _arrears_rows():
 @router.get("/collections/overview")
 async def collections_overview(user: dict = Depends(COL_READ)):
     arrears = await _arrears_rows()
-    acts = await db.collection_activities.find({}, {"_id": 0}).sort("created_at", -1).to_list(5000)
+    acts = await db.collection_activities.find({}, {"_id": 0}).sort("created_at", -1).to_list(None)
     contacted = {a["student_id"] for a in acts}
     latest = {}
     for a in acts:
@@ -135,7 +135,7 @@ async def collections_overview(user: dict = Depends(COL_READ)):
 
 @router.get("/collections/summary-map")
 async def collections_summary_map(user: dict = Depends(COL_READ)):
-    acts = await db.collection_activities.find({}, {"_id": 0}).sort("created_at", -1).to_list(5000)
+    acts = await db.collection_activities.find({}, {"_id": 0}).sort("created_at", -1).to_list(None)
     out = {}
     for a in acts:
         out.setdefault(a["student_id"], {"last_at": a["created_at"], "last_outcome": a["outcome"],
@@ -150,7 +150,7 @@ async def collections_summary_map(user: dict = Depends(COL_READ)):
 @router.get("/collections/students/{sid}/activities")
 async def student_activities(sid: str, user: dict = Depends(COL_READ)):
     await _student_or_404(sid)
-    rows = await db.collection_activities.find({"student_id": sid}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    rows = await db.collection_activities.find({"student_id": sid}, {"_id": 0}).sort("created_at", -1).to_list(None)
     return [clean(r) for r in rows]
 
 

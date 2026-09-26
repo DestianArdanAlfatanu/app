@@ -21,8 +21,8 @@ export const Header = ({ onMenu }) => {
 
   const loadNotifs = async () => {
     try {
-      const [n, c] = await Promise.all([api.get("/notifications"), api.get("/notifications/unread-count")]);
-      setNotifs(n.data); setUnread(c.data.unread);
+      const n = await api.get("/notifications");
+      setNotifs(n.data); setUnread(n.data.filter((x) => !x.read).length);
     } catch (_) { /* ignore */ }
   };
   const markRead = async (n) => {

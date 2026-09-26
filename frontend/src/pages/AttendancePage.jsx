@@ -17,14 +17,16 @@ export default function AttendancePage() {
   const [marks, setMarks] = useState({});
   const [recap, setRecap] = useState({});
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState(null);
 
   useEffect(() => { if (classes?.length && !classId) setClassId(classes[0].id); }, [classes, classId]);
   useEffect(() => {
     if (!classId) return;
+    setLoadError(null);
     Promise.all([api.get(`/classes/${classId}`), api.get(`/attendance?class_id=${classId}&tanggal=${tanggal}`), api.get(`/attendance/recap?class_id=${classId}`)]).then(([c, a, r]) => {
       setCls(c.data); setRecap(r.data);
       const m = {}; c.data.students.forEach((s) => { m[s.id] = "hadir"; }); a.data.forEach((x) => { m[x.student_id] = x.status; }); setMarks(m);
-    }).catch((e) => toast.error(errMsg(e)));
+    }).catch((e) => { setLoadError(errMsg(e)); toast.error(errMsg(e)); });
   }, [classId, tanggal]);
 
   const save = async () => {
@@ -41,12 +43,14 @@ export default function AttendancePage() {
     <div>
       <PageHeader title="Absensi Siswa" jp="出席" subtitle="Ketuk status untuk setiap siswa, lalu simpan. Persentase kehadiran dihitung otomatis." />
       <div className="card p-4 mb-4 grid sm:grid-cols-[1fr_200px_auto] gap-3 items-end">
-        <Field label="Kelas"><select className="input" data-testid="attendance-class-select" value={classId} onChange={(e) => setClassId(e.target.value)}>{(classes || []).map((c) => <option key={c.id} value={c.id}>{c.nama} · {c.guru_nama || "-"}</option>)}</select></Field>
+        <Field label="Kelas"><select className="input" data-testid="attendance-class-select" value={classId} onChange={(e) => setClassId(e.target.value)}>{(classes || []).map((c) => <option key={c.id} value={c.id}>{`${c.nama} · ${c.guru_nama || "-"}`}</option>)}</select></Field>
         <Field label="Tanggal"><input type="date" className="input" data-testid="attendance-date-input" value={tanggal} onChange={(e) => setTanggal(e.target.value)} /></Field>
         <button className="btn-red h-10" onClick={save} disabled={saving || !cls?.students?.length} data-testid="save-attendance-btn"><Save size={16} />{saving ? "Menyimpan..." : "Simpan Absensi"}</button>
       </div>
       <div className="flex gap-2 flex-wrap mb-4 text-xs" data-testid="attendance-summary">{OPTS.map(([k, on]) => <span key={k} className={`chip ${on}`}>{ATT_LABELS[k]}: {counts[k] || 0}</span>)}</div>
-      {!cls ? <Loading /> : cls.students.length === 0 ? <div className="card"><EmptyState text="Kelas ini belum memiliki siswa" /></div> : (
+      {classes && classes.length === 0 ? <div className="card"><EmptyState text="Belum ada kelas. Buat kelas di menu Kelas & Jadwal." /></div>
+        : loadError ? <div className="card"><EmptyState text={`Data kelas gagal dimuat: ${loadError}`} /></div>
+        : !cls ? <Loading /> : cls.students.length === 0 ? <div className="card"><EmptyState text="Kelas ini belum memiliki siswa" /></div> : (
         <div className="space-y-2">
           {cls.students.map((s) => (
             <div key={s.id} className="card p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center gap-3 fade-up" data-testid={`attendance-row-${s.id}`}>

@@ -5,6 +5,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 import os
+import asyncio
 import logging
 from fastapi import FastAPI, APIRouter
 from starlette.middleware.cors import CORSMiddleware
@@ -118,6 +119,28 @@ async def startup():
         logger.error(f"Object storage gagal init: {e}")
 
 
+NOTIF_SYNC_INTERVAL = int(os.environ.get("LPK_NOTIF_SYNC_SECONDS", "300"))
+
+
+async def _periodic_notification_sync():
+    """Sinkronisasi notifikasi + retry WhatsApp berkala, tanpa menunggu ada pengguna yang membuka aplikasi."""
+    from routers.dashboard import _sync_notifications
+    while True:
+        await asyncio.sleep(NOTIF_SYNC_INTERVAL)
+        try:
+            await _sync_notifications()
+        except Exception as e:
+            logger.error(f"Sinkronisasi notifikasi berkala gagal: {e}")
+
+
+@app.on_event("startup")
+async def start_background_jobs():
+    app.state.notif_job = asyncio.create_task(_periodic_notification_sync())
+
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    client.close()
+    job = getattr(app.state, "notif_job", None)
+    if job:
+        job.cancel()
+    await client.aclose()

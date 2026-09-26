@@ -3,15 +3,16 @@ import uuid
 import logging
 from datetime import datetime, timezone, timedelta, date
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import bcrypt
 import jwt
 import requests
 from fastapi import Request, HTTPException, Depends, Query
-from motor.motor_asyncio import AsyncIOMotorClient
+from pg_mongo import PgClient
 
-client = AsyncIOMotorClient(os.environ["MONGO_URL"])
-db = client[os.environ["DB_NAME"]]
+client = PgClient(os.environ["DATABASE_URL"])
+db = client[os.environ.get("DB_NAME", "lpk")]
 logger = logging.getLogger("lpk")
 
 ROLES = ["owner", "admin", "finance", "hr", "guru", "marketing", "staff"]
@@ -28,14 +29,25 @@ DOC_TYPES = [
 ]
 JLPT_ORDER = {"-": 0, "N5": 1, "N4": 2, "N3": 3, "N2": 4, "N1": 5}
 JWT_ALGORITHM = "HS256"
+# Zona waktu bisnis untuk "hari ini" (tanggal transaksi, absensi, jatuh tempo). Timestamp tetap disimpan UTC.
+BUSINESS_TZ = ZoneInfo(os.environ.get("LPK_TZ", "Asia/Jakarta"))
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def today() -> date:
+    return datetime.now(BUSINESS_TZ).date()
+
+
 def today_str() -> str:
-    return date.today().isoformat()
+    return today().isoformat()
+
+
+def local_day_start_utc(d: date) -> str:
+    """Awal hari lokal d dalam UTC ISO, untuk membandingkan dengan timestamp now_iso()."""
+    return datetime(d.year, d.month, d.day, tzinfo=BUSINESS_TZ).astimezone(timezone.utc).isoformat()
 
 
 def new_id() -> str:
@@ -59,12 +71,12 @@ def compute_age(tanggal_lahir: Optional[str]) -> Optional[int]:
         b = date.fromisoformat(tanggal_lahir[:10])
     except ValueError:
         return None
-    t = date.today()
+    t = today()
     return t.year - b.year - ((t.month, t.day) < (b.month, b.day))
 
 
 def period_range(period: str):
-    t = date.today()
+    t = today()
     if period == "hari":
         start = t
     elif period == "minggu":
@@ -139,11 +151,68 @@ def require_roles(*roles):
     return dep
 
 
+async def guru_class_ids(user: dict) -> Optional[set]:
+    """Kelas milik guru yang login; None untuk role non-guru (tidak dibatasi)."""
+    if user.get("role") != "guru":
+        return None
+    rows = await db.classes.find({"guru_id": user.get("employee_id")}, {"_id": 0, "id": 1}).to_list(None)
+    return {c["id"] for c in rows}
+
+
+async def ensure_guru_class(user: dict, class_id: Optional[str]) -> None:
+    own = await guru_class_ids(user)
+    if own is not None and class_id not in own:
+        raise HTTPException(status_code=403, detail="Anda bukan pengajar kelas ini")
+
+
+async def ensure_guru_student(user: dict, student_id: str) -> None:
+    own = await guru_class_ids(user)
+    if own is None:
+        return
+    s = await db.students.find_one({"id": student_id}, {"_id": 0, "class_id": 1})
+    if not s or s.get("class_id") not in own:
+        raise HTTPException(status_code=403, detail="Anda tidak memiliki akses ke siswa ini")
+
+
+def parse_date(value: Optional[str], field: str = "Tanggal", allow_future: bool = True) -> Optional[str]:
+    """Validasi tanggal ISO YYYY-MM-DD; kembalikan string ternormalisasi."""
+    if value in (None, ""):
+        return value
+    try:
+        d = date.fromisoformat(str(value)[:10])
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{field} tidak valid (format YYYY-MM-DD)")
+    if not allow_future and d > today():
+        raise HTTPException(status_code=400, detail=f"{field} tidak boleh di masa depan")
+    return d.isoformat()
+
+
 def deny_student(user: dict) -> dict:
     """Tolak role student pada endpoint internal. Aditif; perilaku staff tidak berubah."""
     if user.get("role") == "student":
         raise HTTPException(status_code=403, detail="Akses ditolak")
     return user
+
+
+# ---------- Login throttling ----------
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_LOCK_MINUTES = 15
+
+
+async def login_locked(ident: str) -> bool:
+    a = await db.login_attempts.find_one({"identifier": ident})
+    return bool(a and a.get("count", 0) >= LOGIN_MAX_ATTEMPTS and a.get("locked_until", "") > now_iso())
+
+
+async def record_login_failure(ident: str) -> None:
+    """Catat gagal login. Setelah masa kunci habis hitungan mulai dari 1 lagi, bukan langsung terkunci ulang."""
+    locked = (datetime.now(timezone.utc) + timedelta(minutes=LOGIN_LOCK_MINUTES)).isoformat()
+    a = await db.login_attempts.find_one({"identifier": ident})
+    if a and a.get("count", 0) >= LOGIN_MAX_ATTEMPTS and a.get("locked_until", "") <= now_iso():
+        await db.login_attempts.update_one({"identifier": ident}, {"$set": {"count": 1, "locked_until": locked}})
+    else:
+        await db.login_attempts.update_one({"identifier": ident}, {"$inc": {"count": 1}, "$set": {"locked_until": locked}},
+                                           upsert=True)
 
 
 # ---------- Audit ----------
@@ -235,7 +304,7 @@ async def save_upload(file, user: dict, folder: str, allowed_exts=None, scope: s
 async def payment_summary_map(student_ids=None):
     match = {} if student_ids is None else {"student_id": {"$in": student_ids}}
     pipeline = [{"$match": match}, {"$group": {"_id": "$student_id", "bayar": {"$sum": "$nominal"}, "terakhir": {"$max": "$tanggal"}}}]
-    rows = await db.payments.aggregate(pipeline).to_list(10000)
+    rows = await db.payments.aggregate(pipeline).to_list(None)
     return {r["_id"]: {"bayar": r["bayar"], "terakhir": r["terakhir"]} for r in rows}
 
 
@@ -244,7 +313,7 @@ def fee_total(student: dict) -> float:
 
 
 async def attendance_summary(student_id: str) -> dict:
-    rows = await db.attendance.find({"student_id": student_id}, {"_id": 0, "status": 1}).to_list(5000)
+    rows = await db.attendance.find({"student_id": student_id}, {"_id": 0, "status": 1}).to_list(None)
     counts = {"hadir": 0, "izin": 0, "sakit": 0, "alfa": 0}
     for r in rows:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
@@ -254,13 +323,13 @@ async def attendance_summary(student_id: str) -> dict:
 
 
 async def grade_average(student_id: str):
-    rows = await db.grades.find({"student_id": student_id}, {"_id": 0, "nilai_akhir": 1}).to_list(1000)
+    rows = await db.grades.find({"student_id": student_id}, {"_id": 0, "nilai_akhir": 1}).to_list(None)
     if not rows:
         return None
     return round(sum(r["nilai_akhir"] for r in rows) / len(rows), 1)
 
 
 async def doc_progress(student_id: str) -> dict:
-    docs = await db.documents.find({"student_id": student_id, "is_deleted": False}, {"_id": 0, "jenis": 1, "status": 1}).to_list(100)
+    docs = await db.documents.find({"student_id": student_id, "is_deleted": False}, {"_id": 0, "jenis": 1, "status": 1}).to_list(None)
     ada = {d["jenis"] for d in docs if d.get("status") in ("tersedia", "verified")}
     return {"lengkap": len(ada), "total": len(DOC_TYPES)}

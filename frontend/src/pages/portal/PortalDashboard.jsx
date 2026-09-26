@@ -14,7 +14,7 @@ export default function PortalDashboard() {
   return (
     <div>
       <PageHeader title={`Halo, ${profile.nama?.split(" ")[0] || "Siswa"}`} subtitle={`${profile.status || "-"}${profile.kelas ? ` · ${profile.kelas}` : ""}`} />
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
         <StatCard label="Kehadiran" value={`${academic.kehadiran ?? "-"}%`} icon={Users} onClick={() => nav("/portal/academic")} />
         <StatCard label="Nilai Rata-rata" value={academic.nilai_rata ?? "-"} icon={GraduationCap} tone="green" onClick={() => nav("/portal/academic")} />
         <StatCard label="Sisa Tagihan" value={rupiah(finance.sisa)} hint={finance.jatuh_tempo ? `Jatuh tempo ${fmtDate(finance.jatuh_tempo)}` : ""} icon={Wallet} tone={finance.sisa > 0 ? "amber" : "green"} onClick={() => nav("/portal/finance")} />

@@ -3,7 +3,7 @@ import { Plus, Check, X, Wallet, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { useApi } from "@/hooks/useApi";
 import { useAuth } from "@/context/AuthContext";
-import { api, errMsg, fileUrl } from "@/lib/api";
+import { api, errMsg, openFile } from "@/lib/api";
 import { PageHeader, FormDialog, Field, EmptyState, Money, Loading } from "@/components/common";
 import { rupiah, fmtDate, fmtDateTime, today } from "@/lib/format";
 
@@ -158,7 +158,7 @@ export default function ExpensePage() {
               {detail.approved_by && <p>Disetujui: {detail.approved_by}</p>}
               {detail.paid_by && <p>Dibayar: {detail.paid_by}</p>}
               {detail.deskripsi && <p className="col-span-2">Deskripsi: {detail.deskripsi}</p>}
-              {detail.bukti_file_id && <p className="col-span-2"><a className="text-red-600 font-semibold text-xs" href={fileUrl(detail.bukti_file_id)} target="_blank" rel="noreferrer">Lihat bukti</a></p>}
+              {detail.bukti_file_id && <p className="col-span-2"><a className="text-red-600 font-semibold text-xs" href="#" onClick={(e) => { e.preventDefault(); openFile(detail.bukti_file_id); }}>Lihat bukti</a></p>}
             </div>
             <div><p className="font-semibold mb-1">Riwayat</p>
               <ul className="space-y-1">{(detail.history || []).map((h, i) => <li key={i} className="text-xs text-slate-600">{fmtDateTime(h.tanggal)} — <b>{h.aksi}</b> oleh {h.oleh} ({h.role}){h.alasan ? `: ${h.alasan}` : ""}</li>)}</ul>

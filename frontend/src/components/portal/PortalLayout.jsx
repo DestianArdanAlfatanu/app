@@ -1,9 +1,9 @@
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { LayoutDashboard, User, GraduationCap, Wallet, FolderOpen, Bell, Settings, LogOut } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
-import { api } from "@/lib/api";
+import { api, errMsg } from "@/lib/api";
 import { useApi } from "@/hooks/useApi";
-import { Loading } from "@/components/common";
+import { Loading, EmptyState } from "@/components/common";
 
 const NAV = [
   { to: "/portal", label: "Dashboard", icon: LayoutDashboard, end: true },
@@ -19,7 +19,7 @@ export default function PortalLayout() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
-  const { data: me } = useApi("/student/auth/me", [loc.pathname]);
+  const { data: me, error: meError } = useApi("/student/auth/me", [loc.pathname]);
 
   const doLogout = async () => { try { await api.post("/student/auth/logout"); } catch (_) { /* ignore */ } await logout(); nav("/portal/login"); };
 
@@ -53,7 +53,7 @@ export default function PortalLayout() {
         ))}
       </nav>
       <main className="p-4 sm:p-6 max-w-[1100px] mx-auto">
-        {me ? <Outlet /> : <Loading />}
+        {me ? <Outlet /> : meError ? <EmptyState text={`Data akun gagal dimuat: ${errMsg(meError)}. Muat ulang halaman.`} /> : <Loading />}
       </main>
     </div>
   );

@@ -27,7 +27,12 @@ export default function GradesPage() {
   const [results, setResults] = useState({});
 
   useEffect(() => { if (classes?.length && !classId) setClassId(classes[0].id); }, [classes, classId]);
-  useEffect(() => { if (classId) api.get(`/classes/${classId}`).then((r) => setCls(r.data)); }, [classId]);
+  const [loadError, setLoadError] = useState(null);
+  useEffect(() => {
+    if (!classId) return;
+    setLoadError(null);
+    api.get(`/classes/${classId}`).then((r) => setCls(r.data)).catch((e) => { setLoadError(errMsg(e)); toast.error(errMsg(e)); });
+  }, [classId]);
 
   const avg = Object.values(g.komponen).filter((v) => v !== "").map(Number);
   const nilaiAkhir = avg.length ? (avg.reduce((a, b) => a + b, 0) / avg.length).toFixed(1) : "-";
@@ -57,7 +62,9 @@ export default function GradesPage() {
 
       {tab === "nilai" && (<>
         <div className="mb-4 max-w-sm"><label className="label">Kelas</label><select className="input" data-testid="grades-class-select" value={classId} onChange={(e) => setClassId(e.target.value)}>{(classes || []).map((c) => <option key={c.id} value={c.id}>{c.nama}</option>)}</select></div>
-        {!cls ? <Loading /> : (
+        {classes && classes.length === 0 ? <div className="card"><EmptyState text="Belum ada kelas. Buat kelas di menu Kelas & Jadwal." /></div>
+          : loadError ? <div className="card"><EmptyState text={`Data kelas gagal dimuat: ${loadError}`} /></div>
+          : !cls ? <Loading /> : (
           <div className="table-wrap fade-up"><table className="tbl" data-testid="grades-table"><thead><tr><th>Siswa</th><th>Periode</th>{KOMP.map((k) => <th key={k} className="capitalize">{k.slice(0, 5)}</th>)}<th>Akhir</th></tr></thead>
             <tbody>{cls.students.length === 0 && <tr><td colSpan={13}><EmptyState text="Kelas belum memiliki siswa" /></td></tr>}
               {cls.students.map((s) => { const list = byStudent[s.id] || []; return list.length === 0 ? <tr key={s.id}><td><Link to={`/siswa/${s.id}`} className="font-medium hover:text-red-600">{s.nama_lengkap}</Link></td><td colSpan={12} className="text-slate-400 text-xs">Belum ada nilai</td></tr>

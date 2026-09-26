@@ -5,7 +5,8 @@ from pydantic import BaseModel, EmailStr
 
 from core import (db, get_current_user, hash_password, verify_password, create_access_token,
                   new_id, now_iso, today_str, clean, log_audit, payment_summary_map, fee_total,
-                  attendance_summary, grade_average, doc_progress, compute_age, save_upload, DOC_TYPES)
+                  attendance_summary, grade_average, doc_progress, compute_age, save_upload, DOC_TYPES,
+                  login_locked, record_login_failure)
 from document_storage import storage as doc_storage, ALLOWED_DOC_EXTENSIONS
 
 router = APIRouter()
@@ -72,16 +73,13 @@ def _pay_view(p: dict) -> dict:
 
 @router.post("/student/auth/login")
 async def student_login(body: PortalLoginIn, request: Request, response: Response):
-    from datetime import datetime, timezone, timedelta
     email = body.email.lower().strip()
     ident = f"{request.client.host if request.client else 'x'}:{email}"
-    attempt = await db.login_attempts.find_one({"identifier": ident})
-    if attempt and attempt.get("count", 0) >= 5 and attempt.get("locked_until", "") > now_iso():
+    if await login_locked(ident):
         raise HTTPException(status_code=429, detail="Terlalu banyak percobaan. Coba lagi dalam 15 menit")
     user = await db.users.find_one({"email": email})
     if not user or user.get("role") != "student" or not verify_password(body.password, user.get("password_hash", "")):
-        locked = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
-        await db.login_attempts.update_one({"identifier": ident}, {"$inc": {"count": 1}, "$set": {"locked_until": locked}}, upsert=True)
+        await record_login_failure(ident)
         raise HTTPException(status_code=401, detail="Email atau password salah")
     if not user.get("aktif", True):
         raise HTTPException(status_code=403, detail="Akun dinonaktifkan")
@@ -117,6 +115,8 @@ async def student_change_password(body: PortalPasswordIn, request: Request):
     current = await db.users.find_one({"id": user["id"]})
     if not current or not verify_password(body.old_password, current.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Password lama salah")
+    if body.new_password == body.old_password:
+        raise HTTPException(status_code=400, detail="Password baru harus berbeda dari password lama")
     await db.users.update_one({"id": user["id"]},
                               {"$set": {"password_hash": hash_password(body.new_password),
                                         "must_change_password": False}})
@@ -131,7 +131,7 @@ async def student_dashboard(ctx: dict = Depends(get_current_student)):
     pay = await payment_summary_map([sid])
     total = fee_total(s)
     bayar = pay.get(sid, {}).get("bayar", 0)
-    docs = await db.documents.find({"student_id": sid, "is_deleted": False}, {"_id": 0}).to_list(200)
+    docs = await db.documents.find({"student_id": sid, "is_deleted": False}, {"_id": 0}).to_list(None)
     expiring = sum(1 for d in docs if d.get("tanggal_kadaluarsa"))
     notif = await _own_notifications(sid, ctx["user"]["id"], limit=5)
     unread = await _own_unread_count(sid, ctx["user"]["id"])
@@ -179,7 +179,7 @@ async def student_class(ctx: dict = Depends(get_current_student)):
 @router.get("/student/attendance")
 async def student_attendance(ctx: dict = Depends(get_current_student)):
     sid = ctx["sid"]
-    rows = await db.attendance.find({"student_id": sid}, {"_id": 0}).sort("tanggal", -1).to_list(1000)
+    rows = await db.attendance.find({"student_id": sid}, {"_id": 0}).sort("tanggal", -1).to_list(None)
     return {"recap": await attendance_summary(sid),
             "rows": [{k: r.get(k) for k in ("tanggal", "status", "jam_masuk", "jam_pulang", "keterangan")} for r in rows]}
 
@@ -187,14 +187,14 @@ async def student_attendance(ctx: dict = Depends(get_current_student)):
 @router.get("/student/grades")
 async def student_grades(ctx: dict = Depends(get_current_student)):
     sid = ctx["sid"]
-    rows = await db.grades.find({"student_id": sid}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    rows = await db.grades.find({"student_id": sid}, {"_id": 0}).sort("created_at", -1).to_list(None)
     return {"rows": [{k: r.get(k) for k in ("periode", "komponen", "nilai_akhir", "catatan", "created_at")} for r in rows]}
 
 
 @router.get("/student/exams")
 async def student_exams(ctx: dict = Depends(get_current_student)):
     sid = ctx["sid"]
-    exams = await db.exams.find({"results.student_id": sid}, {"_id": 0}).sort("tanggal", 1).to_list(100)
+    exams = await db.exams.find({"results.student_id": sid}, {"_id": 0}).sort("tanggal", 1).to_list(None)
     out = []
     for e in exams:
         nilai = next((r["nilai"] for r in e.get("results", []) if r.get("student_id") == sid), None)
@@ -210,7 +210,7 @@ async def student_payments(ctx: dict = Depends(get_current_student)):
     pay = await payment_summary_map([sid])
     total = fee_total(s)
     bayar = pay.get(sid, {}).get("bayar", 0)
-    rows = await db.payments.find({"student_id": sid}, {"_id": 0}).sort("tanggal", -1).to_list(200)
+    rows = await db.payments.find({"student_id": sid}, {"_id": 0}).sort("tanggal", -1).to_list(None)
     return {"fee_plan": s.get("fee_plan") or [], "total": total, "bayar": bayar,
             "sisa": max(total - bayar, 0), "jatuh_tempo": s.get("jatuh_tempo"),
             "rows": [_pay_view(p) for p in rows]}
@@ -227,7 +227,7 @@ async def student_payment_detail(pay_id: str, ctx: dict = Depends(get_current_st
 @router.get("/student/documents")
 async def student_documents(ctx: dict = Depends(get_current_student)):
     sid = ctx["sid"]
-    docs = await db.documents.find({"student_id": sid, "is_deleted": False}, {"_id": 0}).to_list(200)
+    docs = await db.documents.find({"student_id": sid, "is_deleted": False}, {"_id": 0}).to_list(None)
     by_jenis = {d["jenis"]: d for d in docs}
     out = []
     for kategori, jenis in DOC_TYPES:
@@ -265,7 +265,7 @@ async def student_doc_upload(jenis: str = Form(...), file: UploadFile = File(Non
            "tanggal_upload": today_str(), "tanggal_kadaluarsa": None, "uploaded_by": user["name"],
            "verified_by": None, "verified_at": None, "verification_note": "",
            "rejected_reason": "", "is_deleted": False, "created_at": now_iso()}
-    old = await db.documents.find({"student_id": sid, "jenis": jenis, "is_deleted": False}, {"_id": 0, "file_id": 1}).to_list(50)
+    old = await db.documents.find({"student_id": sid, "jenis": jenis, "is_deleted": False}, {"_id": 0, "file_id": 1}).to_list(None)
     try:
         await db.documents.update_many({"student_id": sid, "jenis": jenis, "is_deleted": False}, {"$set": {"is_deleted": True}})
         await db.documents.insert_one(doc)
@@ -321,7 +321,7 @@ async def student_departure(ctx: dict = Depends(get_current_student)):
     if not p:
         return {"profile": None, "readiness": None, "checklist": []}
     r = await compute_readiness(p)
-    items = await db.departure_checklist.find({"departure_profile_id": p["id"]}, {"_id": 0}).to_list(100)
+    items = await db.departure_checklist.find({"departure_profile_id": p["id"]}, {"_id": 0}).to_list(None)
     safe = [{"requirement_code": i.get("requirement_code"), "requirement_name": i.get("requirement_name"),
              "status": i.get("status"),
              "verified_at": i.get("verified_at"),
@@ -348,7 +348,7 @@ async def _own_notification_ids(sid: str) -> set:
 
 async def _own_notifications(sid: str, user_id: str, limit: int = 100):
     doc_ids, iv_ids = await _own_notification_ids(sid)
-    rows = await db.notifications.find({}, {"_id": 0}).sort("tanggal", -1).to_list(2000)
+    rows = await db.notifications.find({}, {"_id": 0}).sort("tanggal", -1).to_list(None)
     out = []
     for n in rows:
         et, eid = n.get("entity_type"), n.get("entity_id")
@@ -400,15 +400,11 @@ async def student_notif_read_all(ctx: dict = Depends(get_current_student)):
 
 
 @router.get("/student/whatsapp-consent")
-async def student_wa_consent(ctx: dict = Depends(get_current_student)):
+async def student_wa_consent(ctx: dict = Depends(get_current_student_lenient)):
     s = ctx["student"]
     return {"wa_student_phone": s.get("wa_student_phone"), "wa_student_opt_in": bool(s.get("wa_student_opt_in", False)),
             "wa_guardian_phone": s.get("wa_guardian_phone"),
             "wa_guardian_opt_in": bool(s.get("wa_guardian_opt_in", False))}
-
-
-class PortalConsentIn(BaseModel):
-    wa_student_opt_in: bool
 
 
 @router.put("/student/whatsapp-consent")
@@ -420,19 +416,3 @@ async def student_wa_consent_update(body: PortalConsentIn, ctx: dict = Depends(g
         await log_audit("student", sid, "wa_consent", user, {"wa_student_opt_in": before},
                         {"wa_student_opt_in": body.wa_student_opt_in})
     return {"ok": True, "wa_student_opt_in": body.wa_student_opt_in}
-
-
-@router.post("/student/auth/change-password")
-async def student_change_password(body: PortalPasswordIn, request: Request):
-    user = await get_current_user(request)
-    _principal(user)
-    if not body.new_password or len(body.new_password) < 6:
-        raise HTTPException(status_code=400, detail="Password minimal 6 karakter")
-    current = await db.users.find_one({"id": user["id"]})
-    if not current or not verify_password(body.old_password, current.get("password_hash", "")):
-        raise HTTPException(status_code=401, detail="Password lama salah")
-    await db.users.update_one({"id": user["id"]},
-                              {"$set": {"password_hash": hash_password(body.new_password),
-                                        "must_change_password": False}})
-    await log_audit("user", user["id"], "password_change", user, None, None)
-    return {"ok": True}

@@ -3,7 +3,7 @@ import { CheckCircle2, XCircle, Upload, Eye, Plus, Trash2, Clock, Check, X } fro
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { useApi } from "@/hooks/useApi";
-import { api, errMsg, fileUrl } from "@/lib/api";
+import { api, errMsg, openFile } from "@/lib/api";
 import { FormDialog, Field, EmptyState, StatusBadge } from "@/components/common";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 
@@ -134,7 +134,7 @@ export const DokumenTab = ({ s, reload }) => {
                     {d.status === "verified" && d.verified_by ? ` · Diverifikasi ${d.verified_by}` : ""}
                     {d.status === "rejected" && d.rejected_reason ? ` · Alasan: ${d.rejected_reason}` : ""}
                     {d.tanggal_kadaluarsa && <span className={`ml-2 font-semibold ${d.tanggal_kadaluarsa < today ? "text-red-600" : d.tanggal_kadaluarsa <= soon ? "text-amber-600" : "text-slate-400"}`}>{d.tanggal_kadaluarsa < today ? "Expired" : "Exp"} {fmtDate(d.tanggal_kadaluarsa)}</span>}</p></div>
-                {d.file_id && <a href={fileUrl(d.file_id)} target="_blank" rel="noreferrer" className="btn-ghost btn-sm" title="Lihat / unduh file" data-testid={`doc-view-${d.jenis.replace(/\s+/g, "-").toLowerCase()}`}><Eye size={14} /></a>}
+                {d.file_id && <a href="#" onClick={(e) => { e.preventDefault(); openFile(d.file_id); }} className="btn-ghost btn-sm" title="Lihat / unduh file" data-testid={`doc-view-${d.jenis.replace(/\s+/g, "-").toLowerCase()}`}><Eye size={14} /></a>}
                 {can("siswa_write") && d.status === "pending_verification" && <button className="btn-ghost btn-sm text-emerald-700" title="Verifikasi dokumen" onClick={() => verify(d)} data-testid={`doc-verify-${d.jenis.replace(/\s+/g, "-").toLowerCase()}`}><Check size={14} /></button>}
                 {can("siswa_write") && d.status === "pending_verification" && <button className="btn-ghost btn-sm text-red-600" title="Tolak dokumen" onClick={() => reject(d)} data-testid={`doc-reject-${d.jenis.replace(/\s+/g, "-").toLowerCase()}`}><X size={14} /></button>}
                 {can("siswa_write") && <button className="btn-ghost btn-sm" onClick={() => openUpload(d)} data-testid={`doc-upload-${d.jenis.replace(/\s+/g, "-").toLowerCase()}`}><Upload size={14} /></button>}

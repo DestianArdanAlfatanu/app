@@ -58,7 +58,7 @@
     .btn-ghost { @apply btn text-slate-600 hover:bg-slate-100; }
     .btn-sm { @apply h-8 px-3 text-xs; }
     .chip { @apply inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium whitespace-nowrap; }
-    .stat-num { @apply mono text-2xl sm:text-3xl font-semibold tracking-tight text-slate-900; }
+    .stat-num { @apply mono text-2xl lg:text-xl xl:text-2xl 2xl:text-3xl font-semibold tracking-tight text-slate-900; overflow-wrap: anywhere; }
     .red-bar { position: relative; }
     .red-bar::before { content: ''; position: absolute; left: 0; top: 10%; bottom: 10%; width: 3px; background: var(--japan-red); border-radius: 2px; }
     .fade-up { animation: fadeUp .45s ease both; }

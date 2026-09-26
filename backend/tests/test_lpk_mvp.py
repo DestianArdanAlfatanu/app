@@ -1465,13 +1465,13 @@ class TestWA:
             requests.put(f"{API}/students/{sid}", headers=hdr_o, timeout=30,
                          json={**{k: v for k, v in orig.items() if k not in ("_id", "id")}})
         # cleanup pesan uji via pymongo sinkron
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         d.whatsapp_messages.delete_many({"student_id": sid, "idempotency_key": {"$regex": suffix[:13]}})
 
     def test_webhook_progression(self, t2, tokens):
         import asyncio, hmac, hashlib, json as _json, time
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         mid = f"TEST-wamid-{int(time.time())}"
         s = requests.get(f"{API}/students", headers=_headers(tokens["owner"]), timeout=30).json()[0]
@@ -1563,6 +1563,17 @@ def _ph(token):
     return {"Authorization": f"Bearer {token}"}
 
 
+@pytest.fixture
+def portal_ready(portal_pair):
+    """PA sudah melewati wajib-ganti-password. Tidak bergantung pada urutan kelas (xdist bisa memisah worker)."""
+    pa = portal_pair["PA"]
+    r = requests.post(f"{API}/student/auth/change-password", headers=_ph(pa["token"]), timeout=30,
+                      json={"old_password": "portal123", "new_password": "baru1234"})
+    if r.status_code == 200:
+        pa["password"] = "baru1234"
+    return portal_pair
+
+
 class TestStudentPortalAuth:
     def test_login_valid(self, portal_pair):
         assert portal_pair["PA"]["token"]
@@ -1638,16 +1649,16 @@ class TestStudentPortalRBAC:
 
 
 class TestStudentPortalIDOR:
-    def test_own_profile(self, portal_pair):
-        tok = portal_pair["PA"].get("token")
+    def test_own_profile(self, portal_ready):
+        tok = portal_ready["PA"].get("token")
         r = requests.get(f"{API}/student/profile", headers=_ph(tok), timeout=30)
         assert r.status_code == 200
-        assert r.json()["id"] == portal_pair["PA"]["sid"]
+        assert r.json()["id"] == portal_ready["PA"]["sid"]
 
-    def test_cross_student_payment_detail(self, portal_pair, tokens):
+    def test_cross_student_payment_detail(self, portal_ready, tokens):
         finance_h = _headers(tokens["finance"])
         acc = requests.get(f"{API}/finance/accounts", headers=finance_h, timeout=30).json()[0]["id"]
-        sid_b = portal_pair["PB"]["sid"]
+        sid_b = portal_ready["PB"]["sid"]
         r = requests.post(f"{API}/payments", headers=finance_h,
                           json={"student_id": sid_b, "nominal": 100000, "tanggal": date.today().isoformat(),
                                 "account_id": acc, "catatan": "TEST portal"})
@@ -1656,18 +1667,18 @@ class TestStudentPortalIDOR:
         try:
             tx = requests.get(f"{API}/finance/transactions", headers=finance_h, timeout=30).json()
             tx_id = next(t["id"] for t in tx if t.get("ref_id") == pid_b)
-            tok_a = portal_pair["PA"].get("token")
+            tok_a = portal_ready["PA"].get("token")
             assert requests.get(f"{API}/student/payments/{pid_b}", headers=_ph(tok_a), timeout=30).status_code == 404
             rows = requests.get(f"{API}/student/payments", headers=_ph(tok_a), timeout=30).json()["rows"]
             assert all(p["id"] != pid_b for p in rows)
         finally:
             requests.delete(f"{API}/payments/{pid_b}", headers=_headers(tokens["owner"]), timeout=30)
 
-    def test_cross_student_notifications(self, portal_pair, tokens):
+    def test_cross_student_notifications(self, portal_ready, tokens):
         owner_h = _headers(tokens["owner"])
         all_n = requests.get(f"{API}/notifications", headers=owner_h, timeout=30).json()
         assert all_n, "need seeded notifications"
-        tok_a = portal_pair["PA"].get("token")
+        tok_a = portal_ready["PA"].get("token")
         mine = requests.get(f"{API}/student/notifications", headers=_ph(tok_a), timeout=30).json()["rows"]
         assert isinstance(mine, list)
         foreign = next((n for n in all_n if "TEST Portal" not in n.get("judul", "")), None)
@@ -1675,14 +1686,14 @@ class TestStudentPortalIDOR:
             assert requests.post(f"{API}/student/notifications/{foreign['id']}/read",
                                  headers=_ph(tok_a), timeout=30).status_code in (403, 404)
 
-    def test_cross_student_documents(self, portal_pair):
-        tok_a = portal_pair["PA"].get("token")
+    def test_cross_student_documents(self, portal_ready):
+        tok_a = portal_ready["PA"].get("token")
         rows = requests.get(f"{API}/student/documents", headers=_ph(tok_a), timeout=30).json()["rows"]
         assert isinstance(rows, list)
         assert requests.get(f"{API}/student/documents/bogus-id/download", headers=_ph(tok_a), timeout=30).status_code == 404
 
-    def test_cross_student_consent(self, portal_pair):
-        tok_a = portal_pair["PA"].get("token")
+    def test_cross_student_consent(self, portal_ready):
+        tok_a = portal_ready["PA"].get("token")
         before = requests.get(f"{API}/student/whatsapp-consent", headers=_ph(tok_a), timeout=30).json()
         assert before["wa_guardian_opt_in"] in (True, False)
         r = requests.put(f"{API}/student/whatsapp-consent", headers=_ph(tok_a),
@@ -1697,21 +1708,21 @@ class TestStudentPortalIDOR:
 
 
 class TestStudentPortalData:
-    def test_dashboard_shape(self, portal_pair):
-        tok = portal_pair["PA"].get("token")
+    def test_dashboard_shape(self, portal_ready):
+        tok = portal_ready["PA"].get("token")
         d = requests.get(f"{API}/student/dashboard", headers=_ph(tok), timeout=30).json()
         assert set(["profile", "academic", "finance", "documents", "notifications", "whatsapp"]) <= set(d.keys())
         assert d["profile"]["nama"]
         blob = str(d)
         assert "gaji_pokok" not in blob and "account_id" not in blob and "petugas" not in blob
 
-    def test_academic_smoke(self, portal_pair):
-        tok = portal_pair["PA"].get("token")
+    def test_academic_smoke(self, portal_ready):
+        tok = portal_ready["PA"].get("token")
         for p in ("class", "attendance", "grades", "exams"):
             assert requests.get(f"{API}/student/{p}", headers=_ph(tok), timeout=30).status_code == 200, p
 
-    def test_finance_privacy(self, portal_pair):
-        tok = portal_pair["PA"].get("token")
+    def test_finance_privacy(self, portal_ready):
+        tok = portal_ready["PA"].get("token")
         d = requests.get(f"{API}/student/payments", headers=_ph(tok), timeout=30).json()
         assert set(["fee_plan", "total", "bayar", "sisa", "rows"]) <= set(d.keys())
         assert "transactions" not in d and "accounts" not in d
@@ -1792,7 +1803,7 @@ class TestStudentProvisioningRace:
             assert codes.count(200) == 1, codes
             assert codes.count(409) == 4, codes
             assert not any(c in (400, 500) for c in codes), codes
-            from pymongo import MongoClient
+            from pg_mongo_sync import MongoClient
             d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
             users = list(d.users.find({"student_id": sid}, {"_id": 0, "id": 1}))
             assert len(users) == 1, users
@@ -1854,7 +1865,7 @@ class TestCollection:
                          json={"status": "pelatihan", "catatan": "test collection"}, timeout=30)
         assert r.status_code == 200, r.text
         yield {"sid": sid, "tag": tag}
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         d.collection_activities.delete_many({"student_id": sid})
         d.whatsapp_messages.delete_many({"student_id": sid})
@@ -1981,7 +1992,7 @@ class TestCollection:
 
     def test_followup_notification_no_wa(self, tokens, col_student):
         from datetime import date
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         fin_h, owner_h = _headers(tokens["finance"]), _headers(tokens["owner"])
         wa_before = d.whatsapp_messages.count_documents({"student_id": col_student["sid"]})
@@ -2020,7 +2031,7 @@ class TestCollectionNotification:
                          json={"status": "pelatihan", "catatan": "test colnotif"}, timeout=30)
         assert r.status_code == 200, r.text
         yield {"sid": sid, "tag": tag}
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         d.collection_activities.delete_many({"student_id": sid})
         d.whatsapp_messages.delete_many({"student_id": sid})
@@ -2101,7 +2112,7 @@ class TestCandidateFollowup:
         assert r.status_code == 200, r.text
         mk["tag"] = tag
         yield mk
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         for sid in (mk["c1"], mk["c2"], mk["c3"], mk["n1"]):
             d.candidate_followups.delete_many({"student_id": sid})
@@ -2191,7 +2202,7 @@ class TestCandidateFollowup:
             res = list(ex.map(hit, range(5)))
         assert all(c == 200 for c, _ in res)
         assert sum(1 for _, d_ in res if d_) == 4
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         assert d.candidate_followups.count_documents({"idem_key": body["idem_key"]}) == 1
 
@@ -2246,7 +2257,7 @@ class TestCandidateFollowup:
             assert r.status_code == 400, r.text
         finally:
             t0 = _headers(tokens["owner"])
-            from pymongo import MongoClient
+            from pg_mongo_sync import MongoClient
             MongoClient("mongodb://127.0.0.1:27017")["lpk"].candidate_followups.delete_many({"student_id": s["id"]})
             MongoClient("mongodb://127.0.0.1:27017")["lpk"].whatsapp_messages.delete_many({"student_id": s["id"]})
             requests.delete(f"{API}/students/{s['id']}", headers=t0, timeout=30)
@@ -2326,7 +2337,7 @@ class TestCandidateFollowup:
         fin_h = _headers(tokens["finance"])
 
         def snap():
-            from pymongo import MongoClient
+            from pg_mongo_sync import MongoClient
             d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
             s = requests.get(f"{API}/finance/summary?period=bulan", headers=fin_h, timeout=30).json()
             return (d.transactions.count_documents({}), d.payments.count_documents({}), s["saldo_kas"])
@@ -2352,7 +2363,7 @@ class TestCandidateFollowup:
         assert e and e["count"] >= 1 and e["last_outcome"] and e["last_contacted"]
 
     def test_28_overview_matches(self, tokens, cf_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         ov = requests.get(f"{API}/candidate-followups/overview", headers=self._mk(tokens), timeout=30).json()
         assert ov["total_calon"] == d.students.count_documents({"status": "calon_siswa"})
@@ -2398,7 +2409,7 @@ class TestDeparture:
         mk["future"] = (date.today() + timedelta(days=365)).isoformat()
         mk["past"] = (date.today() - timedelta(days=10)).isoformat()
         yield mk
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         for sid in (mk["d1"], mk["d2"]):
             for pid in [p["id"] for p in d.departure_profiles.find({"student_id": sid}, {"_id": 0, "id": 1})]:
@@ -2444,7 +2455,7 @@ class TestDeparture:
 
     def test_02b_concurrent_duplicate(self, tokens, dep_setup):
         import concurrent.futures
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         before = d.departure_profiles.count_documents({"student_id": dep_setup["d2"]})
         h = _headers(tokens["owner"])
@@ -2464,7 +2475,7 @@ class TestDeparture:
                             timeout=30).status_code == 404
 
     def test_05_verify_with_doc(self, tokens, dep_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         pid = d.departure_profiles.find_one({"student_id": dep_setup["d1"]})["id"]
         doc = self._mkdoc(tokens, dep_setup["d1"], "Paspor", dep_setup["future"])
@@ -2476,7 +2487,7 @@ class TestDeparture:
         assert r.json()["verified_by"] and r.json()["verified_at"]
 
     def test_06_verify_expired_rejected(self, tokens, dep_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         pid = d.departure_profiles.find_one({"student_id": dep_setup["d2"]})["id"]
         doc = self._mkdoc(tokens, dep_setup["d2"], "Paspor", dep_setup["past"])
@@ -2486,7 +2497,7 @@ class TestDeparture:
         assert r.status_code == 400, r.text
 
     def test_07_verify_foreign_doc(self, tokens, dep_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         pid = d.departure_profiles.find_one({"student_id": dep_setup["d1"]})["id"]
         other = d.documents.find_one({"student_id": dep_setup["d2"]})
@@ -2496,7 +2507,7 @@ class TestDeparture:
         assert r.status_code == 400, r.text
 
     def test_08_reject_needs_reason(self, tokens, dep_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         pid = d.departure_profiles.find_one({"student_id": dep_setup["d1"]})["id"]
         item = next(i for i in self._items(tokens, pid) if i["requirement_code"] == "visa")
@@ -2508,7 +2519,7 @@ class TestDeparture:
         assert r.status_code == 200 and r.json()["status"] == "rejected", r.text
 
     def test_09_exception_flow(self, tokens, dep_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         pid = d.departure_profiles.find_one({"student_id": dep_setup["d1"]})["id"]
         item = next(i for i in self._items(tokens, pid) if i["requirement_code"] == "medical")
@@ -2521,7 +2532,7 @@ class TestDeparture:
         assert r.json()["exception_approved_by"]
 
     def test_10_readiness_aggregation(self, tokens, dep_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         pid = d.departure_profiles.find_one({"student_id": dep_setup["d1"]})["id"]
         r = requests.get(f"{API}/departures/{pid}/readiness", headers=_headers(tokens["owner"]), timeout=30).json()
@@ -2531,7 +2542,7 @@ class TestDeparture:
         assert r["checklist_total"] == 6 and r["readiness_status"] == "BLOCKED"
 
     def test_12_visa_expiry_blocker(self, tokens, dep_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         pid = d.departure_profiles.find_one({"student_id": dep_setup["d2"]})["id"]
         doc = self._mkdoc(tokens, dep_setup["d2"], "Visa", dep_setup["future"])
@@ -2547,7 +2558,7 @@ class TestDeparture:
         assert any("expired" in b for b in r["blockers"]), r["blockers"]
 
     def test_14_arrears_warning_not_blocker(self, tokens, dep_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         pid = d.departure_profiles.find_one({"student_id": dep_setup["d1"]})["id"]
         r = requests.get(f"{API}/departures/{pid}/readiness", headers=_headers(tokens["owner"]), timeout=30).json()
@@ -2555,7 +2566,7 @@ class TestDeparture:
         assert not any("tagihan" in b.lower() or "rp" in b.lower() for b in r["blockers"]), r["blockers"]
 
     def test_10b_ready_requires_conditions(self, tokens, dep_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         pid = d.departure_profiles.find_one({"student_id": dep_setup["d1"]})["id"]
         r = requests.post(f"{API}/departures/{pid}/ready", headers=_headers(tokens["owner"]),
@@ -2563,7 +2574,7 @@ class TestDeparture:
         assert r.status_code == 400, r.text
 
     def test_15_full_verify_then_ready(self, tokens, dep_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         pid = d.departure_profiles.find_one({"student_id": dep_setup["d1"]})["id"]
         h = _headers(tokens["owner"])
@@ -2579,7 +2590,7 @@ class TestDeparture:
         assert r.json()["readiness"]["readiness_status"] == "READY"
 
     def test_16_block_flow(self, tokens, dep_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         pid = d.departure_profiles.find_one({"student_id": dep_setup["d2"]})["id"]
         h = _headers(tokens["owner"])
@@ -2589,7 +2600,7 @@ class TestDeparture:
         assert requests.get(f"{API}/departures/{pid}/readiness", headers=h, timeout=30).json()["readiness_status"] == "BLOCKED"
 
     def test_17_dates_and_ticket(self, tokens, dep_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         pid = d.departure_profiles.find_one({"student_id": dep_setup["d1"]})["id"]
         h = _headers(tokens["owner"])
@@ -2604,7 +2615,7 @@ class TestDeparture:
         assert r.json()["flight_number"] == "GA881" and r.json()["actual_departure_date"] == "2099-06-02"
 
     def test_19_20_notification(self, tokens, dep_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         pid = d.departure_profiles.find_one({"student_id": dep_setup["d2"]})["id"]
         owner_h = _headers(tokens["owner"])
@@ -2661,7 +2672,7 @@ class TestDeparture:
             requests.delete(f"{API}/users/{uid}", headers=owner_h, timeout=30)
 
     def test_24_financial_isolation(self, tokens, dep_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         fin_h = _headers(tokens["finance"])
         owner_h = _headers(tokens["owner"])
@@ -2676,7 +2687,7 @@ class TestDeparture:
         assert s0 == s1
 
     def test_25_audit(self, tokens, dep_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         pid = d.departure_profiles.find_one({"student_id": dep_setup["d1"]})["id"]
         rows = requests.get(f"{API}/audit-logs?entity=departure&limit=100",
@@ -2720,7 +2731,7 @@ class TestDeparturePIC:
         assert r.status_code == 200, r.text
         pid = r.json()["id"]
         yield {"sid": sid, "pid": pid, "tag": tag, "staff_a": staff_a, "staff_b": staff_b}
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         d.departure_checklist.delete_many({"departure_profile_id": pid})
         d.departure_profiles.delete_many({"id": pid})
@@ -2764,7 +2775,7 @@ class TestDeparturePIC:
         to = self._tok("owner@lpk.id", "owner123")
         got = self._dep(to, pic_setup["tag"])
         assert len(got) == 1, [n.get("judul") for n in got]
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         assert d.notifications.count_documents({"dedupe_key": f"dep:{pic_setup['pid']}"}) == 1
         self._set_pic(tokens, pic_setup["pid"], pic_setup["staff_a"]["id"])
@@ -2853,7 +2864,7 @@ class TestPayrollProvenance:
                                         "records": [{"student_id": mk["siswa"], "status": "hadir"}]}, timeout=30)
                 assert r.status_code == 200, r.text
         yield mk
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         pids = [p["id"] for p in d.payrolls.find({"employee_id": {"$in": [mk["guru"], mk["kar"]]}},
                                                  {"_id": 0, "id": 1})]
@@ -2893,7 +2904,7 @@ class TestPayrollProvenance:
             assert s["evidence_count"] >= 1 and s["class_nama"]
 
     def test_04_suggest_no_side_effect(self, tokens, prov_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         n0 = d.payrolls.count_documents({"employee_id": prov_setup["guru"]})
         requests.get(f"{API}/payrolls/suggest-meetings", headers=_headers(tokens["hr"]),
@@ -2947,14 +2958,14 @@ class TestPayrollProvenance:
         assert requests.post(f"{API}/payrolls/calculate", headers=h, json=bad2, timeout=30).status_code == 400
 
     def test_09_alfa_separate(self, tokens, prov_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         p = d.payrolls.find_one({"employee_id": prov_setup["kar"], "periode": "2021-06"}, {"_id": 0})
         assert p["komponen"]["potongan_alfa"] >= 0
         assert all("alfa" not in (x.get("jenis", "").lower()) for x in p["komponen"]["potongan"])
 
     def test_11_input_change_audit(self, tokens, prov_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         p = d.payrolls.find_one({"employee_id": prov_setup["kar"], "periode": "2021-07"}, {"_id": 0, "id": 1})
         r = requests.put(f"{API}/payrolls/{p['id']}", headers=_headers(tokens["hr"]),
@@ -2967,7 +2978,7 @@ class TestPayrollProvenance:
         assert "provenance" in upd[0]["after"] and upd[0].get("alasan") == "Koreksi QA"
 
     def test_12_legacy_readable(self, tokens, prov_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         import uuid
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         legacy = {"id": f"legacy-{uuid.uuid4().hex[:8]}", "periode": "2019-01",
@@ -3006,7 +3017,7 @@ class TestPayrollProvenance:
             return list(ex.map(hit, range(5)))
 
     def test_14_concurrent_5x(self, tokens, prov_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         res = self._race_once(tokens, prov_setup["kar"], "2021-10")
         assert all(c == 200 for c, _ in res), res
@@ -3014,7 +3025,7 @@ class TestPayrollProvenance:
         assert d.payrolls.count_documents({"employee_id": prov_setup["kar"], "periode": "2021-10"}) == 1
 
     def test_15_concurrent_3runs(self, tokens, prov_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         for i, per in enumerate(("2021-11", "2021-12", "2022-01")):
             res = self._race_once(tokens, prov_setup["kar"], per)
@@ -3025,7 +3036,7 @@ class TestPayrollProvenance:
     def test_17_no_dup_audit(self, tokens, prov_setup):
         au = requests.get(f"{API}/audit-logs?entity=payroll&limit=200",
                           headers=_headers(tokens["owner"]), timeout=30).json()
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         for per in ("2021-10", "2021-11", "2021-12", "2022-01"):
             p = d.payrolls.find_one({"employee_id": prov_setup["kar"], "periode": per}, {"_id": 0, "id": 1})
@@ -3034,7 +3045,7 @@ class TestPayrollProvenance:
             assert len(creates) == 1, (per, len(creates))
 
     def test_18_financial_unchanged(self, tokens, prov_setup):
-        from pymongo import MongoClient
+        from pg_mongo_sync import MongoClient
         d = MongoClient("mongodb://127.0.0.1:27017")["lpk"]
         fin_h = _headers(tokens["finance"])
         tx0, saldo0 = d.transactions.count_documents({}), \

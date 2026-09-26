@@ -14,7 +14,7 @@ import requests
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
-from pymongo.errors import DuplicateKeyError
+from pg_mongo import DuplicateKeyError
 
 from core import db, require_roles, new_id, now_iso, clean, log_audit, today_str
 
@@ -196,10 +196,14 @@ async def get_template(key: str) -> Optional[dict]:
     return await db.whatsapp_templates.find_one({"key": key, "active": True}, {"_id": 0})
 
 
-def render_template(body: str, allowed: List[str], variables: dict) -> str:
+def check_template_vars(body: str, allowed: List[str]) -> None:
     missing = [v for v in re.findall(r"\{\{(\w+)\}\}", body) if v not in allowed]
     if missing:
         raise HTTPException(status_code=400, detail=f"Variabel template tidak dikenal: {', '.join(missing)}")
+
+
+def render_template(body: str, allowed: List[str], variables: dict) -> str:
+    check_template_vars(body, allowed)
     out = body
     for v in allowed:
         if v not in variables or variables[v] in (None, ""):
@@ -269,7 +273,11 @@ async def attempt_send(msg_id: str, actor: Optional[dict] = None) -> dict:
     if msg["status"] not in ("queued", "failed"):
         return clean(msg)
     cfg = wa_config()
-    await db.whatsapp_messages.update_one({"id": msg_id}, {"$set": {"status": "sending", "updated_at": now_iso()}})
+    # Klaim atomik: hanya satu pemanggil yang boleh memindahkan pesan ke "sending", jadi tidak ada kirim ganda.
+    claim = await db.whatsapp_messages.update_one({"id": msg_id, "status": {"$in": ["queued", "failed"]}},
+                                                  {"$set": {"status": "sending", "updated_at": now_iso()}})
+    if not claim.matched_count:
+        return clean(await db.whatsapp_messages.find_one({"id": msg_id}, {"_id": 0}))
     if cfg["dry_run"] or not cfg["enabled"]:
         await db.whatsapp_messages.update_one({"id": msg_id}, {"$set": {"status": "sent", "sent_at": now_iso(),
             "provider": "dry_run" if cfg["dry_run"] else "disabled", "dry_run": True, "updated_at": now_iso()}})
@@ -363,7 +371,7 @@ async def wa_test_connection(user: dict = Depends(require_roles("owner"))):
 
 @router.get("/wa/templates")
 async def wa_templates(user: dict = Depends(require_roles("owner", "finance"))):
-    return await db.whatsapp_templates.find({}, {"_id": 0}).sort("key", 1).to_list(100)
+    return await db.whatsapp_templates.find({}, {"_id": 0}).sort("key", 1).to_list(None)
 
 
 @router.post("/wa/templates")
@@ -372,6 +380,7 @@ async def wa_template_create(body: TemplateIn, user: dict = Depends(require_role
         raise HTTPException(status_code=400, detail="Template key sudah ada")
     if body.key not in TEMPLATE_VARS:
         raise HTTPException(status_code=400, detail="Template key tidak dikenal")
+    check_template_vars(body.body, TEMPLATE_VARS[body.key])
     doc = {"id": new_id(), "key": body.key, "provider_name": body.provider_name or "",
            "language": body.language or "id", "category": body.category or "UTILITY", "body": body.body,
            "variables": TEMPLATE_VARS[body.key], "active": body.active, "version": 1,
@@ -389,6 +398,7 @@ async def wa_template_update(key: str, body: TemplateIn, user: dict = Depends(re
     upd: Dict[str, Any] = {"provider_name": body.provider_name or "", "language": body.language or "id",
                            "category": body.category or "UTILITY", "active": body.active, "updated_at": now_iso()}
     if body.body != tpl["body"]:
+        check_template_vars(body.body, TEMPLATE_VARS.get(key, tpl.get("variables") or []))
         upd["body"] = body.body
         upd["version"] = tpl["version"] + 1
     await db.whatsapp_templates.update_one({"key": key}, {"$set": upd})
@@ -406,7 +416,7 @@ async def wa_messages(status: Optional[str] = None, student_id: Optional[str] = 
         q["student_id"] = student_id
     if dari:
         q["created_at"] = {"$gte": dari}
-    rows = await db.whatsapp_messages.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    rows = await db.whatsapp_messages.find(q, {"_id": 0}).sort("created_at", -1).to_list(None)
     return [_public_msg(r) for r in rows]
 
 
@@ -492,6 +502,9 @@ async def wa_retry(msg_id: str, user: dict = Depends(require_roles("finance"))):
     except DuplicateKeyError:
         existing = await db.whatsapp_messages.find_one({"idempotency_key": key}, {"_id": 0})
         return {**_public_msg(existing), "duplicate": True}
+    # Pesan asal digantikan retry manual; keluarkan dari antrean retry otomatis supaya tidak terkirim dua kali.
+    await db.whatsapp_messages.update_one({"id": orig["id"]}, {"$set": {"retryable": False, "next_retry_at": None,
+                                                                         "superseded_by": doc["id"], "updated_at": now_iso()}})
     await log_audit("wa_message", doc["id"], "retry", user, {"retry_of": orig["id"]}, {"status": "queued"})
     return _public_msg(await attempt_send(doc["id"], user))
 
@@ -545,9 +558,10 @@ async def wa_webhook(request: Request):
         cur = STATUS_ORDER.get(msg["status"], -1)
         if ev.get("status") == "failed":
             if msg["status"] in ("sending", "sent", "queued"):
+                retryable = msg.get("attempts", 0) < MAX_ATTEMPTS
                 await db.whatsapp_messages.update_one({"id": msg["id"]}, {"$set": {"status": "failed",
-                    "fail_reason": "provider", "retryable": True,
-                    "next_retry_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+                    "fail_reason": "provider", "retryable": retryable,
+                    "next_retry_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat() if retryable else None,
                     "updated_at": now_iso()}})
         elif rank > cur and ev.get("status") in STATUS_ORDER:
             await db.whatsapp_messages.update_one({"id": msg["id"]}, {"$set": {"status": ev["status"],

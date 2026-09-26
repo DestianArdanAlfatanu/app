@@ -2,10 +2,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from core import db, require_roles, new_id, now_iso, clean, log_audit, compute_age, JLPT_ORDER, payment_summary_map, fee_total, grade_average
+from core import (db, require_roles, new_id, now_iso, clean, log_audit, compute_age, JLPT_ORDER, payment_summary_map, fee_total,
+                  grade_average, STUDENT_STATUSES)
 
 router = APIRouter()
 WRITE = require_roles("admin", "marketing")
+PRE_PEMBERKASAN = STUDENT_STATUSES[:STUDENT_STATUSES.index("pemberkasan")]
 READ = require_roles("admin", "marketing", "staff", "finance", "hr", "guru")
 
 
@@ -36,8 +38,8 @@ class InterviewIn(BaseModel):
 
 @router.get("/job-orders")
 async def list_jobs(user: dict = Depends(READ)):
-    rows = await db.job_orders.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
-    ivs = await db.interviews.find({}, {"_id": 0, "job_order_id": 1, "hasil": 1}).to_list(5000)
+    rows = await db.job_orders.find({}, {"_id": 0}).sort("created_at", -1).to_list(None)
+    ivs = await db.interviews.find({}, {"_id": 0, "job_order_id": 1, "hasil": 1}).to_list(None)
     for r in rows:
         mine = [i for i in ivs if i["job_order_id"] == r["id"]]
         r["jumlah_kandidat"] = len(mine)
@@ -72,8 +74,8 @@ async def candidates(job_id: str, user: dict = Depends(READ)):
     job = await db.job_orders.find_one({"id": job_id}, {"_id": 0})
     if not job:
         raise HTTPException(status_code=404, detail="Job order tidak ditemukan")
-    students = await db.students.find({"status": {"$in": ["pelatihan", "ujian", "lulus", "matching"]}}, {"_id": 0}).to_list(5000)
-    existing = {i["student_id"] for i in await db.interviews.find({"job_order_id": job_id}, {"_id": 0, "student_id": 1}).to_list(1000)}
+    students = await db.students.find({"status": {"$in": ["pelatihan", "ujian", "lulus", "matching"]}}, {"_id": 0}).to_list(None)
+    existing = {i["student_id"] for i in await db.interviews.find({"job_order_id": job_id}, {"_id": 0, "student_id": 1}).to_list(None)}
     out = []
     for s in students:
         usia = compute_age(s.get("tanggal_lahir"))
@@ -93,7 +95,7 @@ async def candidates(job_id: str, user: dict = Depends(READ)):
 @router.get("/interviews")
 async def list_interviews(job_order_id: Optional[str] = None, user: dict = Depends(READ)):
     q = {"job_order_id": job_order_id} if job_order_id else {}
-    return await db.interviews.find(q, {"_id": 0}).sort("tanggal", -1).to_list(2000)
+    return await db.interviews.find(q, {"_id": 0}).sort("tanggal", -1).to_list(None)
 
 
 @router.post("/interviews")
@@ -118,7 +120,9 @@ async def update_interview(iv_id: str, body: InterviewIn, user: dict = Depends(W
     if not old:
         raise HTTPException(status_code=404, detail="Interview tidak ditemukan")
     await db.interviews.update_one({"id": iv_id}, {"$set": {"tanggal": body.tanggal, "hasil": body.hasil, "catatan": body.catatan}})
-    if body.hasil == "lulus" and old["hasil"] != "lulus":
+    s = await db.students.find_one({"id": old["student_id"]}, {"_id": 0, "status": 1})
+    # Hanya majukan status; siswa yang sudah visa/berangkat/alumni/gagal tidak ditarik mundur ke pemberkasan.
+    if body.hasil == "lulus" and old["hasil"] != "lulus" and s and s["status"] in PRE_PEMBERKASAN:
         await db.students.update_one({"id": old["student_id"]}, {"$set": {"status": "pemberkasan", "job_order_id": old["job_order_id"]},
                                                                  "$push": {"status_history": {"status": "pemberkasan", "tanggal": now_iso(), "oleh": user["name"],
                                                                                               "catatan": f"Lulus interview {old['perusahaan']}"}}})

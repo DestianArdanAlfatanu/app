@@ -9,7 +9,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from pymongo.errors import DuplicateKeyError
+from pg_mongo import DuplicateKeyError
 
 from core import (db, require_roles, new_id, now_iso, today_str, clean, log_audit)
 from routers.whatsapp import (queue_message, attempt_send, wa_config, get_template,
@@ -90,8 +90,8 @@ def _prospect_snapshot(s: dict) -> dict:
 
 @router.get("/candidate-followups/overview")
 async def cf_overview(user: dict = Depends(CF_READ)):
-    calons = await db.students.find({"status": "calon_siswa"}, {"_id": 0, "id": 1, "nama_lengkap": 1}).to_list(5000)
-    acts = await db.candidate_followups.find({}, {"_id": 0}).sort("created_at", -1).to_list(5000)
+    calons = await db.students.find({"status": "calon_siswa"}, {"_id": 0, "id": 1, "nama_lengkap": 1}).to_list(None)
+    acts = await db.candidate_followups.find({}, {"_id": 0}).sort("created_at", -1).to_list(None)
     latest = {}
     for a in acts:
         latest.setdefault(a["student_id"], a)
@@ -121,7 +121,7 @@ async def cf_overview(user: dict = Depends(CF_READ)):
 
 @router.get("/candidate-followups/summary-map")
 async def cf_summary_map(user: dict = Depends(CF_READ)):
-    acts = await db.candidate_followups.find({}, {"_id": 0}).sort("created_at", -1).to_list(5000)
+    acts = await db.candidate_followups.find({}, {"_id": 0}).sort("created_at", -1).to_list(None)
     out = {}
     for a in acts:
         if a["student_id"] in out:
@@ -139,7 +139,7 @@ async def cf_summary_map(user: dict = Depends(CF_READ)):
 @router.get("/candidate-followups/students/{sid}/activities")
 async def cf_history(sid: str, user: dict = Depends(CF_READ)):
     await _candidate_or_404(sid)
-    rows = await db.candidate_followups.find({"student_id": sid}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    rows = await db.candidate_followups.find({"student_id": sid}, {"_id": 0}).sort("created_at", -1).to_list(None)
     return [clean(r) for r in rows]
 
 

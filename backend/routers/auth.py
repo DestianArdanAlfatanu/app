@@ -3,8 +3,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr
 
 from core import (db, hash_password, verify_password, create_access_token, create_refresh_token, public_user,
-                  get_current_user, require_roles, new_id, now_iso, ROLES, clean_list, log_audit)
-from pymongo.errors import DuplicateKeyError
+                  get_current_user, require_roles, new_id, now_iso, ROLES, clean_list, log_audit,
+                  login_locked, record_login_failure)
+from pg_mongo import DuplicateKeyError
 
 router = APIRouter()
 
@@ -34,17 +35,16 @@ def set_cookies(response: Response, access: str, refresh: str):
 async def login(body: LoginIn, request: Request, response: Response):
     email = body.email.lower().strip()
     ident = f"{request.client.host if request.client else 'x'}:{email}"
-    attempt = await db.login_attempts.find_one({"identifier": ident})
-    if attempt and attempt.get("count", 0) >= 5 and attempt.get("locked_until", "") > now_iso():
+    if await login_locked(ident):
         raise HTTPException(status_code=429, detail="Terlalu banyak percobaan. Coba lagi dalam 15 menit")
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(body.password, user["password_hash"]):
-        from datetime import datetime, timezone, timedelta
-        locked = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
-        await db.login_attempts.update_one({"identifier": ident}, {"$inc": {"count": 1}, "$set": {"locked_until": locked}}, upsert=True)
+        await record_login_failure(ident)
         raise HTTPException(status_code=401, detail="Email atau password salah")
     if not user.get("aktif", True):
         raise HTTPException(status_code=403, detail="Akun dinonaktifkan")
+    if user.get("role") == "student":
+        raise HTTPException(status_code=403, detail="Akun siswa, silakan masuk lewat Portal Siswa")
     await db.login_attempts.delete_one({"identifier": ident})
     access = create_access_token(user["id"], user["email"], user["role"])
     refresh = create_refresh_token(user["id"])
@@ -67,7 +67,7 @@ async def me(user: dict = Depends(get_current_user)):
 
 @router.get("/users")
 async def list_users(user: dict = Depends(require_roles("owner", "admin", "hr"))):
-    rows = await db.users.find({}, {"_id": 0, "password_hash": 0}).sort("created_at", 1).to_list(500)
+    rows = await db.users.find({}, {"_id": 0, "password_hash": 0}).sort("created_at", 1).to_list(None)
     return rows
 
 
@@ -126,10 +126,21 @@ async def update_user(user_id: str, body: UserIn, user: dict = Depends(require_r
     existing = await db.users.find_one({"id": user_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Pengguna tidak ditemukan")
+    if body.role not in ROLES and body.role != "student":
+        raise HTTPException(status_code=400, detail="Role tidak valid")
+    if (existing["role"] == "student") != (body.role == "student"):
+        raise HTTPException(status_code=400, detail="Akun siswa tidak dapat diubah menjadi akun staff (atau sebaliknya)")
     upd = {"name": body.name, "email": body.email.lower().strip(), "role": body.role, "employee_id": body.employee_id, "aktif": body.aktif}
     if body.password:
+        if len(body.password) < 6:
+            raise HTTPException(status_code=400, detail="Password minimal 6 karakter")
         upd["password_hash"] = hash_password(body.password)
-    await db.users.update_one({"id": user_id}, {"$set": upd})
+        if body.role == "student":
+            upd["must_change_password"] = True  # password dari admin harus diganti siswa saat login berikutnya
+    try:
+        await db.users.update_one({"id": user_id}, {"$set": upd})
+    except DuplicateKeyError:
+        raise HTTPException(status_code=400, detail="Email sudah terdaftar")
     await log_audit("user", user_id, "update", user, {"role": existing["role"], "aktif": existing.get("aktif", True)},
                     {"role": body.role, "aktif": body.aktif})
     return public_user(await db.users.find_one({"id": user_id}))

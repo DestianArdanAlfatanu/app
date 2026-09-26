@@ -3,11 +3,13 @@ import { Plus, Pencil, Scale, Landmark } from "lucide-react";
 import { toast } from "sonner";
 import { useApi } from "@/hooks/useApi";
 import { useAuth } from "@/context/AuthContext";
-import { api, errMsg, fileUrl } from "@/lib/api";
+import { api, errMsg, openFile } from "@/lib/api";
 import { PageHeader, StatCard, Tabs, FormDialog, Field, EmptyState, Money, Loading } from "@/components/common";
 import { rupiah, fmtDate, fmtDateTime, today, METODE } from "@/lib/format";
 
 const EMPTY_TX = { jenis: "pengeluaran", kategori: "", nominal: "", tanggal: today(), deskripsi: "", account_id: "", metode: "transfer", bukti: null, alasan: "" };
+
+const TX_PAGE = 50;
 
 export default function FinancePage() {
   const { can } = useAuth();
@@ -18,6 +20,8 @@ export default function FinancePage() {
   const { data: cats } = useApi("/finance/categories");
   const qs = Object.entries(filter).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`).join("&");
   const { data: txs, loading, reload } = useApi(`/finance/transactions${qs ? `?${qs}` : ""}`);
+  const [shown, setShown] = useState(TX_PAGE);
+  useEffect(() => { setShown(TX_PAGE); }, [qs]);
   const { data: recons, reload: reloadRecon } = useApi("/finance/reconciliations");
   const [txOpen, setTxOpen] = useState(false);
   const [tx, setTx] = useState(EMPTY_TX);
@@ -52,7 +56,7 @@ export default function FinancePage() {
         {can("keuangan_write") && <button className="btn-red" onClick={() => { setEditTx(null); setTx({ ...EMPTY_TX, account_id: sum?.accounts?.[0]?.id || "" }); setTxOpen(true); }} data-testid="add-transaction-btn"><Plus size={16} />Catat Transaksi</button>}
       </PageHeader>
       {!sum ? <Loading /> : (<>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
           <StatCard testId="fin-pemasukan" label="Pemasukan" value={rupiah(sum.pemasukan)} tone="green" hint={`${fmtDate(sum.dari)} – ${fmtDate(sum.sampai)}`} />
           <StatCard testId="fin-pengeluaran" label="Pengeluaran" value={rupiah(sum.pengeluaran)} tone="red" hint={sum.pengeluaran_per_kategori[0] ? `Terbesar: ${sum.pengeluaran_per_kategori[0].kategori}` : ""} />
           <StatCard testId="fin-laba" label="Laba / Rugi Operasional" value={rupiah(sum.laba)} tone={sum.laba >= 0 ? "green" : "red"} />
@@ -75,10 +79,16 @@ export default function FinancePage() {
         {loading && !txs ? <Loading /> : (
           <div className="table-wrap fade-up"><table className="tbl" data-testid="transactions-table"><thead><tr><th>Tanggal</th><th>Jenis</th><th>Kategori</th><th>Deskripsi</th><th>Rekening</th><th>Metode</th><th>Nominal</th><th>Petugas</th><th></th></tr></thead>
             <tbody>{(txs || []).length === 0 && <tr><td colSpan={9}><EmptyState /></td></tr>}
-              {(txs || []).map((t) => <tr key={t.id} data-testid={`tx-row-${t.id}`}><td>{fmtDate(t.tanggal)}</td><td><span className={`chip ${t.jenis === "pemasukan" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-red-50 text-red-700 border-red-200"}`}>{t.jenis}</span></td><td>{t.kategori}</td><td className="max-w-xs truncate">{t.deskripsi}{t.bukti_file_id && <a href={fileUrl(t.bukti_file_id)} target="_blank" rel="noreferrer" className="ml-2 text-xs text-red-600 font-semibold">bukti</a>}</td><td>{t.account_nama}</td><td className="capitalize">{t.metode}</td>
+              {(txs || []).slice(0, shown).map((t) => <tr key={t.id} data-testid={`tx-row-${t.id}`}><td>{fmtDate(t.tanggal)}</td><td><span className={`chip ${t.jenis === "pemasukan" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-red-50 text-red-700 border-red-200"}`}>{t.jenis}</span></td><td>{t.kategori}</td><td className="max-w-xs truncate">{t.deskripsi}{t.bukti_file_id && <a href="#" onClick={(e) => { e.preventDefault(); openFile(t.bukti_file_id); }} className="ml-2 text-xs text-red-600 font-semibold">bukti</a>}</td><td>{t.account_nama}</td><td className="capitalize">{t.metode}</td>
                 <td><Money value={t.nominal} className={`font-semibold ${t.jenis === "pemasukan" ? "text-emerald-700" : "text-red-600"}`} /></td><td className="text-xs">{t.petugas}</td>
                 <td>{can("keuangan_write") && (t.ref_type === "manual" || !t.ref_type) && <button className="btn-ghost btn-sm" onClick={() => { setEditTx(t); setTx({ ...EMPTY_TX, ...t, bukti: null, alasan: "" }); setTxOpen(true); }} data-testid={`edit-tx-${t.id}`}><Pencil size={13} /></button>}</td></tr>)}
             </tbody></table></div>)}
+        {(txs?.length || 0) > shown && (
+          <div className="flex items-center justify-center gap-3 mt-3 text-sm">
+            <span className="text-slate-500">Menampilkan {shown} dari {txs.length} transaksi</span>
+            <button className="btn-outline btn-sm" onClick={() => setShown((n) => n + TX_PAGE)} data-testid="tx-show-more-btn">Tampilkan {Math.min(TX_PAGE, txs.length - shown)} lagi</button>
+          </div>
+        )}
       </>)}
 
       {tab === "kategori" && sum && (

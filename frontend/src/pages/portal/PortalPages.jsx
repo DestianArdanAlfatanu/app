@@ -81,7 +81,7 @@ export function PortalFinance() {
   return (
     <div>
       <PageHeader title="Keuangan" subtitle="Tagihan & riwayat pembayaran Anda" />
-      <div className="grid grid-cols-3 gap-3 mb-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
         <div className="card p-4"><p className="label">Total Tagihan</p><p className="mono font-semibold">{rupiah(data.total)}</p></div>
         <div className="card p-4"><p className="label">Sudah Dibayar</p><p className="mono font-semibold text-emerald-700">{rupiah(data.bayar)}</p></div>
         <div className="card p-4"><p className="label">Sisa</p><p className={`mono font-semibold ${data.sisa > 0 ? "text-red-600" : "text-emerald-600"}`}>{rupiah(data.sisa)}</p>{data.jatuh_tempo && <p className="text-[11px] text-slate-400">Jatuh tempo {fmtDate(data.jatuh_tempo)}</p>}</div>

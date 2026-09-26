@@ -4,7 +4,7 @@ import { Users, UserCheck, GraduationCap, Plane, TrendingUp, TrendingDown, Landm
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { useApi } from "@/hooks/useApi";
 import { useAuth } from "@/context/AuthContext";
-import { PageHeader, StatCard, Loading } from "@/components/common";
+import { PageHeader, StatCard, Loading, EmptyState } from "@/components/common";
 import { rupiah, STATUS_LABELS, STATUS_ORDER, fmtDateTime } from "@/lib/format";
 
 const PERIODS = [["hari", "Hari ini"], ["minggu", "Minggu ini"], ["bulan", "Bulan ini"], ["tahun", "Tahun ini"]];
@@ -17,6 +17,7 @@ export default function DashboardPage() {
   const { data: cash } = useApi("/finance/cashflow?bulan=6", [], can("keuangan"));
 
   if (loading && !data) return <Loading />;
+  if (!data) return <EmptyState text="Dashboard gagal dimuat. Muat ulang halaman untuk mencoba lagi." />;
   const s = data.siswa, k = data.keuangan, o = data.operasional, p = data.pending || {};
   const statusData = STATUS_ORDER.filter((x) => x !== "gagal").map((x) => ({ name: STATUS_LABELS[x].split(" ")[0], jumlah: s.per_status[x] || 0 }));
 
@@ -41,7 +42,7 @@ export default function DashboardPage() {
       {k && (
         <>
           <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Keuangan</p>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
             <StatCard testId="stat-pemasukan" label="Pemasukan" value={rupiah(k.pemasukan)} hint={`Pembayaran hari ini ${rupiah(k.pembayaran_hari_ini)}`} icon={TrendingUp} tone="green" />
             <StatCard testId="stat-pengeluaran" label="Pengeluaran" value={rupiah(k.pengeluaran)} hint={`Laba ${rupiah(k.pemasukan - k.pengeluaran)}`} icon={TrendingDown} tone="red" />
             <StatCard testId="stat-saldo-kas" label="Saldo Kas & Bank" value={rupiah(k.saldo_kas)} hint={k.accounts.map((a) => `${a.nama}: ${rupiah(a.saldo)}`).join(" · ")} icon={Landmark} tone="blue" onClick={() => nav("/keuangan")} />
@@ -84,7 +85,7 @@ export default function DashboardPage() {
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={statusData} margin={{ left: -20 }}>
                 <CartesianGrid vertical={false} stroke="#E2E8F0" />
-                <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} angle={-20} textAnchor="end" height={50} />
+                <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} angle={-45} textAnchor="end" height={80} />
                 <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
                 <Tooltip cursor={{ fill: "#F1F5F9" }} />
                 <Bar dataKey="jumlah" fill="#0F172A" radius={[3, 3, 0, 0]} />

@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { useApi } from "@/hooks/useApi";
 import { useAuth } from "@/context/AuthContext";
 import { api, errMsg } from "@/lib/api";
-import { PageHeader, StatusBadge, Loading, FormDialog, Field, Tabs, Progress } from "@/components/common";
+import { PageHeader, StatusBadge, Loading, FormDialog, Field, Tabs, Progress, EmptyState } from "@/components/common";
 import { StudentForm, normalizeStudent } from "@/components/StudentForm";
 import { rupiah, STATUS_LABELS, STATUS_ORDER, fmtDate } from "@/lib/format";
 import { BiodataTab, SeleksiTab, DokumenTab } from "@/components/student/ProfileTabs";
@@ -15,7 +15,7 @@ export default function StudentDetailPage() {
   const { id } = useParams();
   const nav = useNavigate();
   const { can } = useAuth();
-  const { data: s, loading, reload } = useApi(`/students/${id}`);
+  const { data: s, loading, error, reload } = useApi(`/students/${id}`);
   const [tab, setTab] = useState("biodata");
   const [edit, setEdit] = useState(false);
   const [form, setForm] = useState(null);
@@ -36,7 +36,7 @@ export default function StudentDetailPage() {
   };
 
   if (loading && !s) return <Loading />;
-  if (!s) return <p>Siswa tidak ditemukan</p>;
+  if (!s) return <div className="card"><EmptyState text={error?.response?.status === 404 || !error ? "Siswa tidak ditemukan" : errMsg(error)} /></div>;
 
   const saveEdit = async () => {
     setSaving(true);

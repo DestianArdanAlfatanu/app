@@ -45,7 +45,7 @@ export default function PaymentsPage() {
       <PageHeader title="Pembayaran Siswa" jp="学費管理" subtitle="Cicilan, kwitansi otomatis, dan pengingat tunggakan.">
         {can("pembayaran_write") && <button className="btn-red" onClick={() => setOpen(true)} data-testid="record-payment-btn"><Plus size={16} />Catat Pembayaran</button>}
       </PageHeader>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatCard testId="stat-pembayaran-hari-ini" label="Pembayaran Hari Ini" value={rupiah(totalHariIni)} tone="green" />
         <StatCard testId="stat-total-transaksi" label="Total Transaksi" value={payments?.length ?? "-"} />
         <StatCard testId="stat-siswa-tunggakan" label="Siswa Menunggak" value={arrears?.length ?? "-"} tone="red" onClick={() => setParams({ tab: "tunggakan" })} />

@@ -1,11 +1,13 @@
+import re
 from typing import Optional, List, Dict, Any
+from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Header
 from fastapi.responses import Response
 from pydantic import BaseModel
 
 from core import (db, require_roles, get_current_user, deny_student, new_id, now_iso, today_str, clean, clean_list, log_audit,
                   STUDENT_STATUSES, DOC_TYPES, payment_summary_map, fee_total, attendance_summary, grade_average,
-                  doc_progress, compute_age, save_upload, user_from_token)
+                  doc_progress, compute_age, save_upload, user_from_token, ensure_guru_student, parse_date)
 from document_storage import storage as doc_storage, ALLOWED_DOC_EXTENSIONS
 
 router = APIRouter()
@@ -77,6 +79,29 @@ def apply_wa_contact(doc: dict, existing: Optional[dict] = None) -> dict:
     return doc
 
 
+# Tahap akhir harus berurutan; tahap awal boleh dilompati (input siswa lama / pindahan).
+FINAL_STAGE_FROM = {"visa": None, "berangkat": {"visa"}, "alumni": {"berangkat"}}
+LOCKED_STATUSES = {"berangkat", "alumni"}
+CREATE_BLOCKED_STATUSES = {"visa", "berangkat", "alumni"}
+MANUAL_DOC_STATUSES = {"belum", "tersedia"}
+
+
+def check_status_transition(old: str, new: str, user: dict, catatan: str = "") -> None:
+    if new == old:
+        raise HTTPException(status_code=400, detail="Status sudah sama")
+    order = STUDENT_STATUSES.index
+    if old in LOCKED_STATUSES and user["role"] != "owner":
+        raise HTTPException(status_code=403, detail="Status berangkat/alumni hanya dapat diubah oleh Owner")
+    allowed_from = FINAL_STAGE_FROM.get(new)
+    if allowed_from and old not in allowed_from:
+        raise HTTPException(status_code=400, detail=f"Status '{new}' hanya dapat dicapai dari '{', '.join(sorted(allowed_from))}'")
+    if new == "visa" and order(old) < order("pemberkasan") and old != "gagal":
+        raise HTTPException(status_code=400, detail="Status 'visa' hanya dapat dicapai setelah pemberkasan")
+    backwards = new != "gagal" and old != "gagal" and order(new) < order(old)
+    if backwards and not (catatan or "").strip():
+        raise HTTPException(status_code=400, detail="Catatan wajib diisi saat memundurkan status")
+
+
 class StatusIn(BaseModel):
     status: str
     catatan: Optional[str] = ""
@@ -121,7 +146,7 @@ async def enrich(students: list, user: Optional[dict] = None) -> list:
     ids = [s["id"] for s in students]
     show_pay = (user or {}).get("role", "owner") in FIN_VISIBLE
     pay = await payment_summary_map(ids) if show_pay else {}
-    classes = {c["id"]: c["nama"] for c in await db.classes.find({}, {"_id": 0, "id": 1, "nama": 1}).to_list(500)}
+    classes = {c["id"]: c["nama"] for c in await db.classes.find({}, {"_id": 0, "id": 1, "nama": 1}).to_list(None)}
     out = []
     for s in students:
         total = fee_total(s)
@@ -143,11 +168,11 @@ async def list_students(status: Optional[str] = None, q: Optional[str] = None, c
     if class_id:
         query["class_id"] = class_id
     if q:
-        query["$or"] = [{"nama_lengkap": {"$regex": q, "$options": "i"}}, {"nik": {"$regex": q}}, {"no_hp": {"$regex": q}}]
+        query["$or"] = [{"nama_lengkap": {"$regex": re.escape(q), "$options": "i"}}, {"nik": {"$regex": re.escape(q)}}, {"no_hp": {"$regex": re.escape(q)}}]
     if user["role"] == "guru" and not class_id:
-        emp_classes = await db.classes.find({"guru_id": user.get("employee_id")}, {"_id": 0, "id": 1}).to_list(100)
+        emp_classes = await db.classes.find({"guru_id": user.get("employee_id")}, {"_id": 0, "id": 1}).to_list(None)
         query["class_id"] = {"$in": [c["id"] for c in emp_classes]}
-    rows = await db.students.find(query, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    rows = await db.students.find(query, {"_id": 0}).sort("created_at", -1).to_list(None)
     return await enrich(rows, user)
 
 
@@ -155,6 +180,8 @@ async def list_students(status: Optional[str] = None, q: Optional[str] = None, c
 async def create_student(body: StudentIn, user: dict = Depends(WRITE)):
     if body.status not in STUDENT_STATUSES:
         raise HTTPException(status_code=400, detail="Status tidak valid")
+    if body.status in CREATE_BLOCKED_STATUSES:
+        raise HTTPException(status_code=400, detail="Siswa baru tidak dapat langsung berstatus visa/berangkat/alumni")
     if body.sumber_prospek and body.sumber_prospek not in SUMBER_PROSPEK:
         raise HTTPException(status_code=400, detail="Sumber prospek tidak valid")
     if body.nik and await db.students.find_one({"nik": body.nik}):
@@ -175,7 +202,7 @@ async def get_student(student_id: str, user: dict = Depends(READ)):
     if not s:
         raise HTTPException(status_code=404, detail="Siswa tidak ditemukan")
     if user["role"] == "guru":
-        emp_classes = await db.classes.find({"guru_id": user.get("employee_id")}, {"_id": 0, "id": 1}).to_list(100)
+        emp_classes = await db.classes.find({"guru_id": user.get("employee_id")}, {"_id": 0, "id": 1}).to_list(None)
         if s.get("class_id") not in [c["id"] for c in emp_classes]:
             raise HTTPException(status_code=403, detail="Anda tidak memiliki akses ke siswa ini")
     s = (await enrich([s], user))[0]
@@ -183,14 +210,14 @@ async def get_student(student_id: str, user: dict = Depends(READ)):
     s["nilai_rata"] = await grade_average(student_id)
     s["dokumen"] = await doc_progress(student_id)
     if user["role"] in FIN_VISIBLE:
-        s["payments"] = await db.payments.find({"student_id": student_id}, {"_id": 0}).sort("tanggal", -1).to_list(200)
+        s["payments"] = await db.payments.find({"student_id": student_id}, {"_id": 0}).sort("tanggal", -1).to_list(None)
     else:
         s["payments"] = []
-    s["selections"] = await db.selections.find({"student_id": student_id}, {"_id": 0}).sort("tanggal", -1).to_list(100)
-    s["grades"] = await db.grades.find({"student_id": student_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    s["selections"] = await db.selections.find({"student_id": student_id}, {"_id": 0}).sort("tanggal", -1).to_list(None)
+    s["grades"] = await db.grades.find({"student_id": student_id}, {"_id": 0}).sort("created_at", -1).to_list(None)
     s["attendance_rows"] = await db.attendance.find({"student_id": student_id}, {"_id": 0}).sort("tanggal", -1).to_list(60)
-    s["interviews"] = await db.interviews.find({"student_id": student_id}, {"_id": 0}).sort("tanggal", -1).to_list(50)
-    exams = await db.exams.find({"results.student_id": student_id}, {"_id": 0}).sort("tanggal", 1).to_list(100)
+    s["interviews"] = await db.interviews.find({"student_id": student_id}, {"_id": 0}).sort("tanggal", -1).to_list(None)
+    exams = await db.exams.find({"results.student_id": student_id}, {"_id": 0}).sort("tanggal", 1).to_list(None)
     s["exam_results"] = [{"exam_id": e["id"], "nama": e["nama"], "jenis": e["jenis"], "tanggal": e["tanggal"], "passing_grade": e.get("passing_grade", 70),
                           "nilai": next((r["nilai"] for r in e["results"] if r["student_id"] == student_id), None)} for e in exams]
     if s.get("class_id"):
@@ -220,8 +247,27 @@ async def delete_student(student_id: str, user: dict = Depends(require_roles("ad
     s = await db.students.find_one({"id": student_id}, {"_id": 0})
     if not s:
         raise HTTPException(status_code=404, detail="Siswa tidak ditemukan")
+    if await db.payments.find_one({"student_id": student_id}, {"_id": 0, "id": 1}):
+        raise HTTPException(status_code=409, detail="Siswa memiliki riwayat pembayaran sehingga tidak dapat dihapus. "
+                                                    "Ubah statusnya menjadi 'gagal' atau 'alumni'.")
+    # Bersihkan data turunan supaya tidak ada record yatim (akun portal, kelas, akademik, dokumen, alur kerja).
+    files = [d["file_id"] for d in await db.documents.find({"student_id": student_id}, {"_id": 0, "file_id": 1}).to_list(None)
+             if d.get("file_id")]
+    for rec in await db.files.find({"id": {"$in": files}}, {"_id": 0, "storage_path": 1}).to_list(None):
+        try:
+            doc_storage.delete(rec["storage_path"])
+        except Exception:
+            pass
+    if files:
+        await db.files.update_many({"id": {"$in": files}}, {"$set": {"is_deleted": True}})
+    await db.classes.update_many({"student_ids": student_id}, {"$pull": {"student_ids": student_id}})
+    await db.exams.update_many({"results.student_id": student_id}, {"$pull": {"results": {"student_id": student_id}}})
+    profiles = [p["id"] for p in await db.departure_profiles.find({"student_id": student_id}, {"_id": 0, "id": 1}).to_list(None)]
+    for coll in ("users", "documents", "attendance", "grades", "selections", "interviews", "departure_profiles",
+                 "departure_checklist", "collection_activities", "candidate_followups"):
+        await db[coll].delete_many({"student_id": student_id})
     await db.students.delete_one({"id": student_id})
-    await log_audit("student", student_id, "delete", user, {"nama": s["nama_lengkap"]}, None)
+    await log_audit("student", student_id, "delete", user, {"nama": s["nama_lengkap"], "departure_profiles": profiles}, None)
     return {"ok": True}
 
 
@@ -232,6 +278,7 @@ async def change_status(student_id: str, body: StatusIn, user: dict = Depends(WR
     s = await db.students.find_one({"id": student_id}, {"_id": 0})
     if not s:
         raise HTTPException(status_code=404, detail="Siswa tidak ditemukan")
+    check_status_transition(s["status"], body.status, user, body.catatan)
     hist = {"status": body.status, "tanggal": now_iso(), "oleh": user["name"], "catatan": body.catatan}
     await db.students.update_one({"id": student_id}, {"$set": {"status": body.status}, "$push": {"status_history": hist}})
     await log_audit("student", student_id, "status", user, {"status": s["status"]}, {"status": body.status}, body.catatan or "")
@@ -273,7 +320,8 @@ async def delete_selection(sel_id: str, user: dict = Depends(WRITE)):
 # ---------- Dokumen ----------
 @router.get("/students/{student_id}/documents")
 async def list_documents(student_id: str, user: dict = Depends(READ)):
-    docs = await db.documents.find({"student_id": student_id, "is_deleted": False}, {"_id": 0}).to_list(200)
+    await ensure_guru_student(user, student_id)
+    docs = await db.documents.find({"student_id": student_id, "is_deleted": False}, {"_id": 0}).to_list(None)
     by_jenis = {d["jenis"]: d for d in docs}
     out = []
     for kategori, jenis in DOC_TYPES:
@@ -306,7 +354,7 @@ async def upload_document(student_id: str, jenis: str = Form(...), kategori: str
            "tanggal_upload": today_str(), "tanggal_kadaluarsa": tanggal_kadaluarsa or None, "uploaded_by": user["name"],
            "verified_by": None, "verified_at": None, "verification_note": "",
            "rejected_reason": "", "is_deleted": False, "created_at": now_iso()}
-    old = await db.documents.find({"student_id": student_id, "jenis": jenis, "is_deleted": False}, {"_id": 0, "file_id": 1}).to_list(50)
+    old = await db.documents.find({"student_id": student_id, "jenis": jenis, "is_deleted": False}, {"_id": 0, "file_id": 1}).to_list(None)
     try:
         await db.documents.update_many({"student_id": student_id, "jenis": jenis, "is_deleted": False}, {"$set": {"is_deleted": True}})
         await db.documents.insert_one(doc)
@@ -337,6 +385,10 @@ async def upload_document(student_id: str, jenis: str = Form(...), kategori: str
 
 @router.put("/students/{student_id}/documents/status")
 async def set_doc_status(student_id: str, body: DocStatusIn, user: dict = Depends(WRITE)):
+    # Status verifikasi hanya lewat alur upload -> verify/reject supaya ada file dan jejak audit.
+    if body.status not in MANUAL_DOC_STATUSES:
+        raise HTTPException(status_code=400, detail="Status dokumen hanya boleh 'belum' atau 'tersedia'. Gunakan tombol Verifikasi.")
+    body.tanggal_kadaluarsa = parse_date(body.tanggal_kadaluarsa, "Tanggal kadaluarsa")
     if body.status == "belum":
         await db.documents.update_many({"student_id": student_id, "jenis": body.jenis, "is_deleted": False}, {"$set": {"is_deleted": True}})
         return {"ok": True}
@@ -377,15 +429,44 @@ async def reject_document(student_id: str, doc_id: str, body: DocRejectIn, user:
     return clean(await db.documents.find_one({"id": doc_id}, {"_id": 0}))
 
 
+# Role per jenis file. Dokumen siswa: role yang mengelola data siswa (guru hanya siswa kelasnya).
+# Bukti keuangan: modul keuangan; bukti pengajuan biaya juga untuk role yang boleh melihat pengajuan.
+DOC_FILE_ROLES = {"owner", "admin", "marketing", "staff", "hr", "finance", "guru"}
+FIN_FILE_ROLES = {"owner", "admin", "finance"}
+EXPENSE_FILE_ROLES = FIN_FILE_ROLES | {"staff", "marketing"}
+
+
+async def _can_read_file(user: dict, rec: dict) -> bool:
+    folder, _, rest = (rec.get("storage_path") or "").partition("/")
+    owner = rest.split("/", 1)[0]
+    role = user["role"]
+    if folder == "dokumen":
+        if role not in DOC_FILE_ROLES:
+            return False
+        if role == "guru":
+            try:
+                await ensure_guru_student(user, owner)
+            except HTTPException:
+                return False
+        return True
+    if owner == user["id"] or role in FIN_FILE_ROLES:
+        return True
+    if role in EXPENSE_FILE_ROLES and await db.expenses.find_one({"bukti_file_id": rec["id"]}, {"_id": 0, "id": 1}):
+        return True
+    return False
+
+
 @router.get("/files/{file_id}")
 async def download_file(file_id: str, authorization: str = Header(None), auth: str = Query(None)):
     token = auth or (authorization[7:] if authorization and authorization.startswith("Bearer ") else None)
     if not token:
         raise HTTPException(status_code=401, detail="Belum login")
-    deny_student(await user_from_token(token))
+    user = deny_student(await user_from_token(token))
     rec = await db.files.find_one({"id": file_id, "is_deleted": False})
     if not rec:
         raise HTTPException(status_code=404, detail="File tidak ditemukan")
+    if not await _can_read_file(user, rec):
+        raise HTTPException(status_code=403, detail="Anda tidak memiliki akses ke file ini")
     try:
         data, _ = doc_storage.open(rec["storage_path"])
         ct = rec.get("content_type") or "application/octet-stream"
@@ -394,7 +475,7 @@ async def download_file(file_id: str, authorization: str = Header(None), auth: s
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Gagal mengambil file: {e}")
     return Response(content=data, media_type=rec.get("content_type") or ct,
-                    headers={"Content-Disposition": f'inline; filename="{rec["original_filename"]}"'})
+                    headers={"Content-Disposition": "inline; filename*=UTF-8''" + quote(rec.get("original_filename") or "file")})
 
 
 @router.post("/upload")

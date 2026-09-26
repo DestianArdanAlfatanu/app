@@ -29,13 +29,11 @@ export const StatCard = ({ label, value, hint, icon: Icon, tone = "slate", testI
   return (
     <div data-testid={testId} onClick={onClick} className={`card p-5 fade-up ${onClick ? "cursor-pointer hover:border-slate-300 transition-colors" : ""}`}>
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</p>
-          <p className="stat-num mt-2 truncate">{value}</p>
-          {hint && <p className="text-xs text-slate-500 mt-1.5">{hint}</p>}
-        </div>
-        {Icon && <div className={`h-10 w-10 rounded-md flex items-center justify-center shrink-0 ${tones[tone]}`}><Icon size={18} /></div>}
+        <p className="min-w-0 text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+        {Icon && <div className={`h-9 w-9 rounded-md flex items-center justify-center shrink-0 ${tones[tone]}`}><Icon size={17} /></div>}
       </div>
+      <p className="stat-num mt-1">{value}</p>
+      {hint && <p className="text-xs text-slate-500 mt-1.5">{hint}</p>}
     </div>
   );
 };

@@ -49,10 +49,11 @@ function App() {
               <Route path="/portal/settings" element={<PortalSettings />} />
             </Route>
             <Route element={<AppLayout />}>
-              <Route path="/" element={<DashboardPage />} />
-              <Route path="/siswa" element={<StudentsPage />} />
-              <Route path="/siswa/:id" element={<StudentDetailPage />} />
-              <Route path="/followup" element={<Guard mod="followup"><FollowupPage /></Guard>} />              <Route path="/kelas" element={<Guard mod="kelas"><ClassesPage /></Guard>} />
+              <Route path="/" element={<Guard mod="dashboard"><DashboardPage /></Guard>} />
+              <Route path="/siswa" element={<Guard mod="siswa"><StudentsPage /></Guard>} />
+              <Route path="/siswa/:id" element={<Guard mod="siswa"><StudentDetailPage /></Guard>} />
+              <Route path="/followup" element={<Guard mod="followup"><FollowupPage /></Guard>} />
+              <Route path="/kelas" element={<Guard mod="kelas"><ClassesPage /></Guard>} />
               <Route path="/absensi" element={<Guard mod="absensi"><AttendancePage /></Guard>} />
               <Route path="/nilai" element={<Guard mod="nilai"><GradesPage /></Guard>} />
               <Route path="/pembayaran" element={<Guard mod="pembayaran"><PaymentsPage /></Guard>} />

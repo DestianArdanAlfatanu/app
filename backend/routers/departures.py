@@ -9,10 +9,10 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from pymongo.errors import DuplicateKeyError
+from pg_mongo import DuplicateKeyError
 
 from core import (db, require_roles, new_id, now_iso, today_str, clean, log_audit,
-                  payment_summary_map, fee_total)
+                  payment_summary_map, fee_total, today)
 
 router = APIRouter()
 
@@ -137,7 +137,7 @@ async def _enrich_profile(p: dict) -> dict:
 
 async def compute_readiness(profile: dict) -> dict:
     """Satu-satunya source of truth readiness. Derived, tanpa tulis."""
-    items = await db.departure_checklist.find({"departure_profile_id": profile["id"]}, {"_id": 0}).to_list(100)
+    items = await db.departure_checklist.find({"departure_profile_id": profile["id"]}, {"_id": 0}).to_list(None)
     s = await db.students.find_one({"id": profile["student_id"]}, {"_id": 0})
     t = today_str()
     ref_date = profile.get("target_departure_date") or t
@@ -172,7 +172,7 @@ async def compute_readiness(profile: dict) -> dict:
     days = None
     if profile.get("target_departure_date"):
         try:
-            days = (_date.fromisoformat(profile["target_departure_date"]) - _date.today()).days
+            days = (_date.fromisoformat(profile["target_departure_date"]) - today()).days
         except ValueError:
             pass
     if blockers:
@@ -192,7 +192,7 @@ async def list_departures(status: Optional[str] = None, user: dict = Depends(DEP
     q = {}
     if status:
         q["status"] = status
-    rows = await db.departure_profiles.find(q, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    rows = await db.departure_profiles.find(q, {"_id": 0}).sort("created_at", -1).to_list(None)
     out = []
     for p in rows:
         p = await _enrich_profile(p)
@@ -250,6 +250,10 @@ async def update_departure(pid: str, body: ProfileUpdateIn, user: dict = Depends
     upd = {k: v for k, v in body.model_dump(exclude_unset=True).items() if k != "alasan"}
     if "status" in upd and upd["status"] not in PROFILE_STATUSES:
         raise HTTPException(status_code=400, detail="Status tidak valid")
+    if upd.get("status") == "berangkat" and old.get("status") != "berangkat":
+        ready = await compute_readiness(old)
+        if ready["readiness_status"] != "READY":
+            raise HTTPException(status_code=400, detail="Belum READY: status berangkat butuh keputusan final READY dari Owner")
     if not upd:
         raise HTTPException(status_code=400, detail="Tidak ada perubahan")
     upd["updated_at"] = now_iso()
@@ -266,7 +270,7 @@ async def update_departure(pid: str, body: ProfileUpdateIn, user: dict = Depends
 @router.get("/departures/{pid}/checklist")
 async def get_checklist(pid: str, user: dict = Depends(DEP_READ)):
     await _profile_or_404(pid)
-    rows = await db.departure_checklist.find({"departure_profile_id": pid}, {"_id": 0}).to_list(100)
+    rows = await db.departure_checklist.find({"departure_profile_id": pid}, {"_id": 0}).to_list(None)
     out = []
     for it in rows:
         it = clean(it)

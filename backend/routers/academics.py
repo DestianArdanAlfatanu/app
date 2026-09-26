@@ -2,7 +2,8 @@ from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from core import db, require_roles, new_id, now_iso, today_str, clean, log_audit
+from core import (db, require_roles, new_id, now_iso, today_str, clean, log_audit, guru_class_ids, ensure_guru_class,
+                  ensure_guru_student, parse_date)
 
 router = APIRouter()
 WRITE = require_roles("admin", "guru")
@@ -53,8 +54,19 @@ class ExamResultsIn(BaseModel):
     results: List[Dict[str, Any]]
 
 
+def _grade_values(komponen: Dict[str, Any]) -> List[float]:
+    vals = []
+    for k, v in komponen.items():
+        if v is None:
+            continue
+        if not 0 <= float(v) <= 100:
+            raise HTTPException(status_code=400, detail=f"Nilai {k} harus 0–100")
+        vals.append(float(v))
+    return vals
+
+
 async def with_teacher(classes: list) -> list:
-    teachers = {t["id"]: t["nama"] for t in await db.employees.find({"tipe": "guru"}, {"_id": 0, "id": 1, "nama": 1}).to_list(500)}
+    teachers = {t["id"]: t["nama"] for t in await db.employees.find({"tipe": "guru"}, {"_id": 0, "id": 1, "nama": 1}).to_list(None)}
     for c in classes:
         c["guru_nama"] = teachers.get(c.get("guru_id"))
         c["jumlah_siswa"] = len(c.get("student_ids", []))
@@ -64,7 +76,7 @@ async def with_teacher(classes: list) -> list:
 @router.get("/classes")
 async def list_classes(user: dict = Depends(READ)):
     q = {"guru_id": user.get("employee_id")} if user["role"] == "guru" else {}
-    return await with_teacher(await db.classes.find(q, {"_id": 0}).sort("created_at", -1).to_list(500))
+    return await with_teacher(await db.classes.find(q, {"_id": 0}).sort("created_at", -1).to_list(None))
 
 
 @router.post("/classes")
@@ -81,7 +93,7 @@ async def get_class(class_id: str, user: dict = Depends(READ)):
     if not c:
         raise HTTPException(status_code=404, detail="Kelas tidak ditemukan")
     c = (await with_teacher([c]))[0]
-    c["students"] = await db.students.find({"id": {"$in": c.get("student_ids", [])}}, {"_id": 0, "id": 1, "nama_lengkap": 1, "status": 1, "jenis_kelamin": 1}).to_list(500)
+    c["students"] = await db.students.find({"id": {"$in": c.get("student_ids", [])}}, {"_id": 0, "id": 1, "nama_lengkap": 1, "status": 1, "jenis_kelamin": 1}).to_list(None)
     return c
 
 
@@ -122,21 +134,26 @@ async def unenroll(class_id: str, student_id: str, user: dict = Depends(require_
 # ---------- Absensi ----------
 @router.get("/attendance")
 async def get_attendance(class_id: str, tanggal: Optional[str] = None, user: dict = Depends(READ)):
+    await ensure_guru_class(user, class_id)
     q: Dict[str, Any] = {"class_id": class_id}
     if tanggal:
         q["tanggal"] = tanggal
-    return await db.attendance.find(q, {"_id": 0}).sort("tanggal", -1).to_list(5000)
+    return await db.attendance.find(q, {"_id": 0}).sort("tanggal", -1).to_list(None)
 
 
 @router.post("/attendance")
 async def save_attendance(body: AttendanceIn, user: dict = Depends(WRITE)):
-    if user["role"] == "guru":
-        c = await db.classes.find_one({"id": body.class_id})
-        if not c or c.get("guru_id") != user.get("employee_id"):
-            raise HTTPException(status_code=403, detail="Anda bukan pengajar kelas ini")
+    await ensure_guru_class(user, body.class_id)
+    c = await db.classes.find_one({"id": body.class_id}, {"_id": 0, "student_ids": 1})
+    if not c:
+        raise HTTPException(status_code=404, detail="Kelas tidak ditemukan")
+    body.tanggal = parse_date(body.tanggal, "Tanggal absensi", allow_future=False)
+    enrolled = set(c.get("student_ids") or [])
     for r in body.records:
-        if r["status"] not in ("hadir", "izin", "sakit", "alfa"):
+        if r.get("status") not in ("hadir", "izin", "sakit", "alfa"):
             raise HTTPException(status_code=400, detail="Status absensi tidak valid")
+        if r.get("student_id") not in enrolled:
+            raise HTTPException(status_code=400, detail="Siswa tidak terdaftar di kelas ini")
         await db.attendance.update_one(
             {"class_id": body.class_id, "student_id": r["student_id"], "tanggal": body.tanggal},
             {"$set": {"status": r["status"], "dicatat_oleh": user["name"], "updated_at": now_iso()},
@@ -147,9 +164,10 @@ async def save_attendance(body: AttendanceIn, user: dict = Depends(WRITE)):
 
 @router.get("/attendance/recap")
 async def attendance_recap(class_id: str, user: dict = Depends(READ)):
+    await ensure_guru_class(user, class_id)
     pipeline = [{"$match": {"class_id": class_id}},
                 {"$group": {"_id": {"s": "$student_id", "st": "$status"}, "n": {"$sum": 1}}}]
-    rows = await db.attendance.aggregate(pipeline).to_list(10000)
+    rows = await db.attendance.aggregate(pipeline).to_list(None)
     out: Dict[str, Dict[str, int]] = {}
     for r in rows:
         out.setdefault(r["_id"]["s"], {"hadir": 0, "izin": 0, "sakit": 0, "alfa": 0})[r["_id"]["st"]] = r["n"]
@@ -168,16 +186,31 @@ async def list_grades(student_id: Optional[str] = None, class_id: Optional[str] 
         q["student_id"] = student_id
     if class_id:
         q["class_id"] = class_id
-    rows = await db.grades.find(q, {"_id": 0}).sort("created_at", -1).to_list(2000)
-    names = {s["id"]: s["nama_lengkap"] for s in await db.students.find({"id": {"$in": [r["student_id"] for r in rows]}}, {"_id": 0, "id": 1, "nama_lengkap": 1}).to_list(2000)}
+    own = await guru_class_ids(user)
+    if own is not None:
+        if class_id and class_id not in own:
+            raise HTTPException(status_code=403, detail="Anda bukan pengajar kelas ini")
+        if not class_id:
+            q["class_id"] = {"$in": sorted(own)}
+    rows = await db.grades.find(q, {"_id": 0}).sort("created_at", -1).to_list(None)
+    names = {s["id"]: s["nama_lengkap"] for s in await db.students.find({"id": {"$in": [r["student_id"] for r in rows]}}, {"_id": 0, "id": 1, "nama_lengkap": 1}).to_list(None)}
     for r in rows:
         r["student_nama"] = names.get(r["student_id"])
     return rows
 
 
+async def _check_grade_scope(user: dict, body: GradeIn) -> None:
+    """Guru hanya menilai siswa di kelas yang ia ajar."""
+    if user["role"] != "guru":
+        return
+    await ensure_guru_class(user, body.class_id)
+    await ensure_guru_student(user, body.student_id)
+
+
 @router.post("/grades")
 async def create_grade(body: GradeIn, user: dict = Depends(WRITE)):
-    vals = [v for v in body.komponen.values() if v is not None]
+    await _check_grade_scope(user, body)
+    vals = _grade_values(body.komponen)
     if not vals:
         raise HTTPException(status_code=400, detail="Minimal satu komponen nilai")
     doc = {**body.model_dump(), "id": new_id(), "nilai_akhir": round(sum(vals) / len(vals), 1), "guru": user["name"], "created_at": now_iso()}
@@ -191,7 +224,9 @@ async def update_grade(grade_id: str, body: GradeIn, user: dict = Depends(WRITE)
     old = await db.grades.find_one({"id": grade_id}, {"_id": 0})
     if not old:
         raise HTTPException(status_code=404, detail="Nilai tidak ditemukan")
-    vals = [v for v in body.komponen.values() if v is not None]
+    await ensure_guru_class(user, old.get("class_id"))
+    await _check_grade_scope(user, body)
+    vals = _grade_values(body.komponen)
     upd = {**body.model_dump(), "nilai_akhir": round(sum(vals) / len(vals), 1) if vals else 0}
     await db.grades.update_one({"id": grade_id}, {"$set": upd})
     await log_audit("grade", grade_id, "update", user, {"nilai_akhir": old["nilai_akhir"]}, {"nilai_akhir": upd["nilai_akhir"]})
@@ -200,14 +235,21 @@ async def update_grade(grade_id: str, body: GradeIn, user: dict = Depends(WRITE)
 
 @router.delete("/grades/{grade_id}")
 async def delete_grade(grade_id: str, user: dict = Depends(WRITE)):
+    old = await db.grades.find_one({"id": grade_id}, {"_id": 0})
+    if not old:
+        raise HTTPException(status_code=404, detail="Nilai tidak ditemukan")
+    await ensure_guru_class(user, old.get("class_id"))
     await db.grades.delete_one({"id": grade_id})
+    await log_audit("grade", grade_id, "delete", user, {"student_id": old["student_id"], "nilai_akhir": old.get("nilai_akhir")}, None)
     return {"ok": True}
 
 
 # ---------- Ujian ----------
 @router.get("/exams")
 async def list_exams(user: dict = Depends(READ)):
-    rows = await db.exams.find({}, {"_id": 0}).sort("tanggal", -1).to_list(500)
+    own = await guru_class_ids(user)
+    q = {} if own is None else {"class_id": {"$in": sorted(own)}}
+    rows = await db.exams.find(q, {"_id": 0}).sort("tanggal", -1).to_list(None)
     for e in rows:
         res = e.get("results", [])
         e["jumlah_peserta"] = len(res)
@@ -218,6 +260,9 @@ async def list_exams(user: dict = Depends(READ)):
 
 @router.post("/exams")
 async def create_exam(body: ExamIn, user: dict = Depends(WRITE)):
+    if user["role"] == "guru":
+        await ensure_guru_class(user, body.class_id)
+    body.tanggal = parse_date(body.tanggal, "Tanggal ujian")
     doc = {**body.model_dump(), "id": new_id(), "results": [], "created_at": now_iso()}
     await db.exams.insert_one(doc)
     return clean(doc)
@@ -225,9 +270,22 @@ async def create_exam(body: ExamIn, user: dict = Depends(WRITE)):
 
 @router.put("/exams/{exam_id}/results")
 async def set_results(exam_id: str, body: ExamResultsIn, user: dict = Depends(WRITE)):
-    if not await db.exams.find_one({"id": exam_id}):
+    exam = await db.exams.find_one({"id": exam_id}, {"_id": 0})
+    if not exam:
         raise HTTPException(status_code=404, detail="Ujian tidak ditemukan")
-    results = [{"student_id": r["student_id"], "nilai": float(r["nilai"])} for r in body.results if r.get("nilai") not in (None, "")]
+    if user["role"] == "guru":
+        await ensure_guru_class(user, exam.get("class_id"))
+    results = []
+    for r in body.results:
+        if r.get("nilai") in (None, ""):
+            continue
+        try:
+            nilai = float(r["nilai"])
+        except (TypeError, ValueError, KeyError):
+            raise HTTPException(status_code=400, detail="Nilai ujian harus angka")
+        if not r.get("student_id") or not 0 <= nilai <= 100:
+            raise HTTPException(status_code=400, detail="Nilai ujian harus 0–100 dan menyertakan siswa")
+        results.append({"student_id": r["student_id"], "nilai": nilai})
     await db.exams.update_one({"id": exam_id}, {"$set": {"results": results, "updated_at": now_iso()}})
     await log_audit("exam", exam_id, "results", user, None, {"jumlah": len(results)})
     return {"ok": True}

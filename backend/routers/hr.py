@@ -4,9 +4,9 @@ import calendar
 import re
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from pymongo.errors import DuplicateKeyError
+from pg_mongo import DuplicateKeyError
 
-from core import db, require_roles, new_id, now_iso, today_str, clean, log_audit
+from core import db, require_roles, new_id, now_iso, today_str, today, clean, log_audit
 
 router = APIRouter()
 HR = require_roles("hr")
@@ -53,8 +53,8 @@ class EmployeeIn(BaseModel):
 @router.get("/employees")
 async def list_employees(tipe: Optional[str] = None, user: dict = Depends(HR_READ)):
     q = {"tipe": tipe} if tipe else {}
-    rows = await db.employees.find(q, {"_id": 0}).sort("nama", 1).to_list(1000)
-    classes = await db.classes.find({}, {"_id": 0, "id": 1, "nama": 1, "guru_id": 1, "jadwal": 1, "status": 1}).to_list(500)
+    rows = await db.employees.find(q, {"_id": 0}).sort("nama", 1).to_list(None)
+    classes = await db.classes.find({}, {"_id": 0, "id": 1, "nama": 1, "guru_id": 1, "jadwal": 1, "status": 1}).to_list(None)
     if user["role"] not in ("owner", "hr", "admin", "finance"):
         for r in rows:
             r.pop("gaji_pokok", None); r.pop("tunjangan", None); r.pop("honor_per_pertemuan", None); r.pop("nik", None)
@@ -146,11 +146,11 @@ async def list_hr_attendance(dari: Optional[str] = None, sampai: Optional[str] =
     if employee_id:
         q["employee_id"] = employee_id
     if tipe:
-        emps = await db.employees.find({"tipe": tipe}, {"_id": 0, "id": 1}).to_list(2000)
+        emps = await db.employees.find({"tipe": tipe}, {"_id": 0, "id": 1}).to_list(None)
         q["employee_id"] = {"$in": [e["id"] for e in emps]}
-    rows = await db.employee_attendances.find(q, {"_id": 0}).sort([("tanggal", -1), ("employee_id", 1)]).to_list(10000)
+    rows = await db.employee_attendances.find(q, {"_id": 0}).sort([("tanggal", -1), ("employee_id", 1)]).to_list(None)
     names = {e["id"]: {"nama": e["nama"], "tipe": e.get("tipe"), "jabatan": e.get("jabatan")}
-             for e in await db.employees.find({}, {"_id": 0, "id": 1, "nama": 1, "tipe": 1, "jabatan": 1}).to_list(2000)}
+             for e in await db.employees.find({}, {"_id": 0, "id": 1, "nama": 1, "tipe": 1, "jabatan": 1}).to_list(None)}
     for r in rows:
         info = names.get(r["employee_id"], {})
         r["employee_nama"] = info.get("nama")
@@ -193,14 +193,14 @@ async def hr_attendance_recap(dari: Optional[str] = None, sampai: Optional[str] 
         if sampai:
             match["tanggal"]["$lte"] = sampai
     pipeline = [{"$match": match}, {"$group": {"_id": {"e": "$employee_id", "st": "$status"}, "n": {"$sum": 1}}}]
-    rows = await db.employee_attendances.aggregate(pipeline).to_list(20000)
+    rows = await db.employee_attendances.aggregate(pipeline).to_list(None)
     per_emp: Dict[str, Dict[str, int]] = {}
     for r in rows:
         per_emp.setdefault(r["_id"]["e"], {"hadir": 0, "terlambat": 0, "izin": 0, "sakit": 0, "alfa": 0, "cuti": 0})
         if r["_id"]["st"] in per_emp[r["_id"]["e"]]:
             per_emp[r["_id"]["e"]][r["_id"]["st"]] = r["n"]
     q_emp: Dict[str, Any] = {"tipe": tipe} if tipe else {}
-    emps = await db.employees.find(q_emp, {"_id": 0, "id": 1, "nama": 1, "tipe": 1, "jabatan": 1, "aktif": 1}).sort("nama", 1).to_list(2000)
+    emps = await db.employees.find(q_emp, {"_id": 0, "id": 1, "nama": 1, "tipe": 1, "jabatan": 1, "aktif": 1}).sort("nama", 1).to_list(None)
     out = []
     for e in emps:
         c = per_emp.get(e["id"], {"hadir": 0, "terlambat": 0, "izin": 0, "sakit": 0, "alfa": 0, "cuti": 0})
@@ -272,7 +272,7 @@ def _enrich_leaves(rows: list, names: dict) -> list:
 
 async def _employee_names() -> dict:
     return {e["id"]: {"nama": e["nama"], "tipe": e.get("tipe"), "jabatan": e.get("jabatan")}
-            for e in await db.employees.find({}, {"_id": 0, "id": 1, "nama": 1, "tipe": 1, "jabatan": 1}).to_list(2000)}
+            for e in await db.employees.find({}, {"_id": 0, "id": 1, "nama": 1, "tipe": 1, "jabatan": 1}).to_list(None)}
 
 
 @router.get("/leaves")
@@ -292,7 +292,7 @@ async def list_leaves(status: Optional[str] = None, employee_id: Optional[str] =
         q.setdefault("sampai", {})["$lte"] = sampai
     if dari and sampai:
         q["dari"] = {"$lte": sampai}
-    rows = await db.leaves.find(q, {"_id": 0}).sort([("dari", -1), ("created_at", -1)]).to_list(5000)
+    rows = await db.leaves.find(q, {"_id": 0}).sort([("dari", -1), ("created_at", -1)]).to_list(None)
     return _enrich_leaves(rows, await _employee_names())
 
 
@@ -327,16 +327,20 @@ async def decide_leave(leave_id: str, body: LeaveDecideIn, user: dict = Depends(
         days = _leave_dates(lv["dari"], lv["sampai"])
         if await _find_overlap(lv["employee_id"], lv["dari"], lv["sampai"], exclude_id=leave_id):
             raise HTTPException(status_code=409, detail="Pengajuan cuti bertabrakan dengan pengajuan cuti yang sudah ada")
-        await _mark_cuti_range(lv["employee_id"], days, user)
         upd = {"status": "disetujui", "approver_id": user["id"], "approver_name": user["name"], "decided_at": now_iso(),
                "reject_reason": "", "attendance_marked": True, "updated_at": now_iso()}
-        await db.leaves.update_one({"id": leave_id}, {"$set": upd})
+        res = await db.leaves.update_one({"id": leave_id, "status": "menunggu"}, {"$set": upd})
+        if not res.matched_count:
+            raise HTTPException(status_code=409, detail="Pengajuan cuti sudah diproses oleh pengguna lain")
+        await _mark_cuti_range(lv["employee_id"], days, user)
         await log_audit("leave", leave_id, "approve", user, {"status": "menunggu"},
                         {"status": "disetujui", "dari": lv["dari"], "sampai": lv["sampai"]})
     else:
         upd = {"status": "ditolak", "approver_id": user["id"], "approver_name": user["name"], "decided_at": now_iso(),
                "reject_reason": body.alasan.strip(), "updated_at": now_iso()}
-        await db.leaves.update_one({"id": leave_id}, {"$set": upd})
+        res = await db.leaves.update_one({"id": leave_id, "status": "menunggu"}, {"$set": upd})
+        if not res.matched_count:
+            raise HTTPException(status_code=409, detail="Pengajuan cuti sudah diproses oleh pengguna lain")
         await log_audit("leave", leave_id, "reject", user, {"status": "menunggu"},
                         {"status": "ditolak"}, body.alasan.strip())
     return _enrich_leaves([clean(await db.leaves.find_one({"id": leave_id}, {"_id": 0}))], await _employee_names())[0]
@@ -465,7 +469,7 @@ def _is_honor_model(emp: dict) -> bool:
 async def _attendance_counts(employee_id: str, wstart: date, wend: date) -> Dict[str, int]:
     rows = await db.employee_attendances.find(
         {"employee_id": employee_id, "tanggal": {"$gte": wstart.isoformat(), "$lte": wend.isoformat()}},
-        {"_id": 0, "status": 1}).to_list(1000)
+        {"_id": 0, "status": 1}).to_list(None)
     counts = {"hadir": 0, "terlambat": 0, "izin": 0, "sakit": 0, "cuti": 0, "alfa": 0}
     for r in rows:
         if r.get("status") in counts:
@@ -534,7 +538,7 @@ async def _calc_one(emp: dict, periode: str, pstart: date, pend: date, dim: int,
 
 async def _next_slip_no() -> str:
     c = await db.counters.find_one_and_update({"_id": "slip"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True)
-    return f"SLIP-{date.today().strftime('%Y%m')}-{c['seq']:04d}"
+    return f"SLIP-{today().strftime('%Y%m')}-{c['seq']:04d}"
 
 
 @router.get("/payrolls")
@@ -551,7 +555,7 @@ async def list_payrolls(periode: Optional[str] = None, employee_id: Optional[str
         if status not in PAYROLL_STATUSES:
             raise HTTPException(status_code=400, detail="Status payroll tidak valid")
         q["status"] = status
-    rows = await db.payrolls.find(q, {"_id": 0}).sort([("periode", -1), ("employee_nama", 1)]).to_list(5000)
+    rows = await db.payrolls.find(q, {"_id": 0}).sort([("periode", -1), ("employee_nama", 1)]).to_list(None)
     if tipe:
         rows = [r for r in rows if r.get("snapshot", {}).get("tipe") == tipe]
     return rows
@@ -567,14 +571,14 @@ async def suggest_meetings(employee_id: str, periode: str, user: dict = Depends(
     if not emp:
         raise HTTPException(status_code=404, detail="Karyawan tidak ditemukan")
     pstart, pend, _ = _parse_periode(periode)
-    classes = await db.classes.find({"guru_id": employee_id}, {"_id": 0, "id": 1, "nama": 1}).to_list(500)
+    classes = await db.classes.find({"guru_id": employee_id}, {"_id": 0, "id": 1, "nama": 1}).to_list(None)
     names = {c["id"]: c.get("nama", "") for c in classes}
     if not names:
         return {"employee_id": employee_id, "periode": periode, "suggested_meetings": 0, "suggestions": []}
     rows = await db.attendance.find(
         {"class_id": {"$in": list(names.keys())},
          "tanggal": {"$gte": pstart.isoformat(), "$lte": pend.isoformat()}},
-        {"_id": 0, "class_id": 1, "tanggal": 1, "student_id": 1}).to_list(10000)
+        {"_id": 0, "class_id": 1, "tanggal": 1, "student_id": 1}).to_list(None)
     grouped: Dict[tuple, set] = {}
     for r in rows:
         grouped.setdefault((r["tanggal"], r["class_id"]), set()).add(r.get("student_id"))
@@ -599,7 +603,7 @@ async def calculate_payrolls(body: PayrollCalcIn, user: dict = Depends(PAYROLL_W
     items = {i.employee_id: i for i in (body.items or [])}
     emp_ids = list(items.keys()) + [e for e in (body.employee_ids or []) if e not in items]
     if not emp_ids:
-        emps = await db.employees.find({"aktif": True}, {"_id": 0}).sort("nama", 1).to_list(2000)
+        emps = await db.employees.find({"aktif": True}, {"_id": 0}).sort("nama", 1).to_list(None)
     else:
         emps = await db.employees.find({"id": {"$in": emp_ids}}, {"_id": 0}).to_list(len(emp_ids))
         found = {e["id"] for e in emps}
@@ -707,8 +711,11 @@ async def approve_payroll(pay_id: str, user: dict = Depends(PAYROLL_APPROVE)):
         raise HTTPException(status_code=404, detail="Payroll tidak ditemukan")
     if p["status"] != "draft":
         raise HTTPException(status_code=400, detail="Hanya payroll draft yang dapat disetujui")
-    await db.payrolls.update_one({"id": pay_id}, {"$set": {"status": "disetujui", "approved_by": user["name"],
-                                                           "approved_at": now_iso(), "updated_at": now_iso()}})
+    res = await db.payrolls.update_one({"id": pay_id, "status": "draft"},
+                                       {"$set": {"status": "disetujui", "approved_by": user["name"],
+                                                 "approved_at": now_iso(), "updated_at": now_iso()}})
+    if not res.matched_count:
+        raise HTTPException(status_code=409, detail="Payroll sudah diproses oleh pengguna lain")
     await log_audit("payroll", pay_id, "approve", user, {"status": "draft"},
                     {"status": "disetujui", "bersih": p["bersih"]})
     return clean(await db.payrolls.find_one({"id": pay_id}, {"_id": 0}))

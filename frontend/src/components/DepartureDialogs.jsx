@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { api, errMsg, fileUrl } from "@/lib/api";
+import { api, errMsg, openFile } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { FormDialog, Field, Loading, EmptyState } from "@/components/common";
 import { fmtDate as fmtD } from "@/lib/format";
@@ -50,7 +50,7 @@ export function ChecklistDialog({ profile, onClose, onChanged }) {
               <span className={`chip ${it.status === "verified" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : it.status === "rejected" ? "bg-red-50 text-red-700 border-red-200" : it.status === "exception" ? "bg-violet-50 text-violet-700 border-violet-200" : "bg-slate-100 text-slate-600 border-slate-200"}`}>{ITEM_LABELS[it.status]}</span>
             </div>
             <p className="text-xs text-slate-500 mt-1">
-              {it.document?.jenis ? <>Dok: {it.document.jenis}{it.document.tanggal_kadaluarsa ? ` (exp ${fmtD(it.document.tanggal_kadaluarsa)})` : ""} {it.document.file_id ? <a className="text-red-600 font-semibold" href={fileUrl(it.document.file_id)} target="_blank" rel="noreferrer">Lihat</a> : ""} · </> : "Belum ada dokumen tertaut · "}
+              {it.document?.jenis ? <>Dok: {it.document.jenis}{it.document.tanggal_kadaluarsa ? ` (exp ${fmtD(it.document.tanggal_kadaluarsa)})` : ""} {it.document.file_id ? <a className="text-red-600 font-semibold" href="#" onClick={(e) => { e.preventDefault(); openFile(it.document.file_id); }}>Lihat</a> : ""} · </> : "Belum ada dokumen tertaut · "}
               {it.verified_by ? `Verified oleh ${it.verified_by} ${fmtD(it.verified_at?.slice(0, 10))} · ` : ""}
               {it.verification_note ? `“${it.verification_note}” · ` : ""}
               {it.status === "rejected" ? `Alasan: ${it.rejected_reason} · ` : ""}

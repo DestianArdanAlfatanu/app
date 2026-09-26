@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Users, BookOpen, ClipboardCheck, GraduationCap, Wallet, Landmark, ReceiptText, Briefcase, UserCog, FileBarChart, History, ShieldCheck, X, PhoneCall, Plane } from "lucide-react";
+import { LayoutDashboard, Users, BookOpen, ClipboardCheck, GraduationCap, Wallet, Landmark, ReceiptText, Briefcase, UserCog, FileBarChart, History, ShieldCheck, X, PhoneCall, Plane, MessageCircle } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
 const NAV = [
@@ -19,6 +19,7 @@ const NAV = [
   { section: "Manajemen" },
   { to: "/sdm", label: "Guru & Karyawan", icon: UserCog, mod: "sdm" },
   { to: "/laporan", label: "Laporan", icon: FileBarChart, mod: "laporan" },
+  { to: "/whatsapp", label: "WhatsApp", icon: MessageCircle, mod: "whatsapp" },
   { to: "/audit", label: "Audit Trail", icon: History, mod: "audit" },
   { to: "/pengguna", label: "Pengguna & Akses", icon: ShieldCheck, mod: "pengguna" },
 ];
