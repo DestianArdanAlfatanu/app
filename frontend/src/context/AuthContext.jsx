@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { api, TOKEN_KEY } from "@/lib/api";
 
 const AuthCtx = createContext(null);
+const HIDDEN_MODULES = ["whatsapp", "whatsapp_send", "whatsapp_admin"];
 
 const MODULES = {
   dashboard: ["owner", "admin", "finance", "hr", "guru", "marketing", "staff"],
@@ -34,13 +35,13 @@ const MODULES = {
   payroll_pay: ["owner", "finance"],
   laporan: ["owner", "admin", "finance", "hr"],
   audit: ["owner", "admin", "finance", "hr"],
-  whatsapp: ["owner", "admin", "finance", "hr"],
+  whatsapp: [],
   followup: ["owner", "admin", "marketing", "staff"],
   departure: ["owner", "admin", "staff", "finance", "hr", "guru", "marketing"],
   departure_write: ["owner", "admin", "staff"],
   departure_verify: ["owner", "admin", "staff", "finance", "hr"],
-  whatsapp_send: ["owner", "finance"],
-  whatsapp_admin: ["owner"],
+  whatsapp_send: [],
+  whatsapp_admin: [],
   pengguna: ["owner", "admin"],
 };
 
@@ -66,7 +67,10 @@ export function AuthProvider({ children }) {
     setUser(null);
   };
 
-  const can = (module) => !!user && (user.role === "owner" || (MODULES[module] || []).includes(user.role));
+  const can = (module) => {
+    if (HIDDEN_MODULES.includes(module)) return false;
+    return !!user && (user.role === "owner" || (MODULES[module] || []).includes(user.role));
+  };
 
   return <AuthCtx.Provider value={{ user, checking, login, logout, can }}>{children}</AuthCtx.Provider>;
 }
