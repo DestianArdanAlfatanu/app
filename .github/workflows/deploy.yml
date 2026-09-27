@@ -33,7 +33,9 @@ jobs:
         env:
           DATABASE_URL: postgresql://lpk:ci-only-password@localhost:5432/lpk_ci
           DB_NAME: lpk_ci
-        run: python backend/check_student_seed.py
+        run: |
+          python backend/check_student_seed.py
+          python backend/check_portal_password.py
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

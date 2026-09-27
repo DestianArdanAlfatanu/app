@@ -202,11 +202,13 @@ export function PortalNotifications() {
 
 export function PortalSettings() {
   const nav = useNavigate();
-  const { data: me } = useApi("/student/auth/me");
+  const { data: me, reload: reloadMe } = useApi("/student/auth/me");
   const { data: consent, loading, reload } = useApi("/student/whatsapp-consent");
   const [pw, setPw] = useState({ old_password: "", new_password: "" });
   const [saving, setSaving] = useState(false);
+  const [passwordError, setPasswordError] = useState("");
   const savePw = async () => {
+    setPasswordError("");
     setSaving(true);
     try {
       const { data } = await api.post("/student/auth/change-password", pw);
@@ -214,9 +216,10 @@ export function PortalSettings() {
       if (data?.token) localStorage.setItem(TOKEN_KEY, data.token);
       toast.success("Password berhasil diganti");
       setPw({ old_password: "", new_password: "" });
+      reloadMe();
       if (me?.must_change_password) nav("/portal");
     }
-    catch (e) { toast.error(errMsg(e)); } finally { setSaving(false); }
+    catch (e) { setPasswordError(errMsg(e)); } finally { setSaving(false); }
   };
   const saveConsent = async (v) => {
     try { await api.put("/student/whatsapp-consent", { wa_student_opt_in: v }); toast.success("Preferensi WhatsApp tersimpan"); reload(); }
@@ -227,12 +230,14 @@ export function PortalSettings() {
     <div className="space-y-3">
       <PageHeader title="Pengaturan" subtitle={me?.email} />
       {me?.must_change_password && <div className="card card-pad border-amber-300 bg-amber-50 text-sm">Akun baru wajib mengganti password awal terlebih dahulu.</div>}
-      <div className="card card-pad">
+      <form className="card card-pad" onSubmit={(e) => { e.preventDefault(); savePw(); }}>
         <h3 className="font-semibold text-sm mb-2">Ganti Password</h3>
-        <Field label="Password lama"><input type="password" className="input" data-testid="portal-old-pw" value={pw.old_password} onChange={(e) => setPw({ ...pw, old_password: e.target.value })} /></Field>
-        <Field label="Password baru (min 6 karakter)"><input type="password" className="input" data-testid="portal-new-pw" value={pw.new_password} onChange={(e) => setPw({ ...pw, new_password: e.target.value })} /></Field>
-        <button className="btn-primary mt-2" onClick={savePw} disabled={saving} data-testid="portal-save-pw">Simpan Password</button>
-      </div>
+        <Field label="Password lama"><input type="password" className="input" autoComplete="current-password" required data-testid="portal-old-pw" value={pw.old_password} onChange={(e) => setPw({ ...pw, old_password: e.target.value })} /></Field>
+        <Field label="Password baru (min 6 karakter)"><input type="password" className="input" autoComplete="new-password" minLength={6} required data-testid="portal-new-pw" value={pw.new_password} onChange={(e) => setPw({ ...pw, new_password: e.target.value })} /></Field>
+        <p className="text-xs text-slate-500 mt-2">Password lama adalah password yang baru saja digunakan untuk login.</p>
+        {passwordError && <p role="alert" className="text-sm text-red-600 mt-2">{passwordError}</p>}
+        <button type="submit" className="btn-primary mt-2" disabled={saving} data-testid="portal-save-pw">Simpan Password</button>
+      </form>
       <div className="card card-pad">
         <h3 className="font-semibold text-sm mb-1">Notifikasi WhatsApp</h3>
         <p className="text-xs text-slate-500 mb-2">Nomor: {consent?.wa_student_phone || "-"} · Wali: {consent?.wa_guardian_opt_in ? "aktif" : "nonaktif"} (read-only)</p>

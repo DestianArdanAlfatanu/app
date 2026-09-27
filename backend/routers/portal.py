@@ -114,7 +114,7 @@ async def student_change_password(body: PortalPasswordIn, request: Request):
         raise HTTPException(status_code=400, detail="Password minimal 6 karakter")
     current = await db.users.find_one({"id": user["id"]})
     if not current or not verify_password(body.old_password, current.get("password_hash", "")):
-        raise HTTPException(status_code=401, detail="Password lama salah")
+        raise HTTPException(status_code=400, detail="Password lama salah")
     if body.new_password == body.old_password:
         raise HTTPException(status_code=400, detail="Password baru harus berbeda dari password lama")
     await db.users.update_one({"id": user["id"]},
