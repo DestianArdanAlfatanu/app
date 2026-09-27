@@ -17,7 +17,7 @@ set -a
 source /etc/lpk/backend.env
 set +a
 cd /var/www/lpk/backend
-runuser -u lpk --preserve-environment -- .venv/bin/python seed_student_accounts.py
+runuser -u lpk -- .venv/bin/python seed_student_accounts.py
 systemctl restart lpk
 for attempt in {1..30}; do
     if curl -fsS http://127.0.0.1:8002/api/ >/dev/null; then
