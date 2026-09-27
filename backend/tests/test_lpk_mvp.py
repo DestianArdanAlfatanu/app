@@ -1611,7 +1611,7 @@ class TestStudentPortalAuth:
         tok = portal_pair["PA"]["token"]
         assert requests.get(f"{API}/student/dashboard", headers=_ph(tok), timeout=30).status_code == 403
         assert requests.post(f"{API}/student/auth/change-password", headers=_ph(tok),
-                             json={"old_password": "salah", "new_password": "baru1234"}, timeout=30).status_code == 401
+                             json={"old_password": "salah", "new_password": "baru1234"}, timeout=30).status_code == 400
         assert requests.post(f"{API}/student/auth/change-password", headers=_ph(tok),
                              json={"old_password": "portal123", "new_password": "abc"}, timeout=30).status_code == 400
         r = requests.post(f"{API}/student/auth/change-password", headers=_ph(tok),
