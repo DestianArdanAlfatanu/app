@@ -1,0 +1,82 @@
+name: Test and deploy LPK
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: lpk-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: lpk
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: lpk_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U lpk -d lpk_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r backend/requirements.txt
+      - name: Check student seeder against PostgreSQL
+        env:
+          DATABASE_URL: postgresql://lpk:ci-only-password@localhost:5432/lpk_ci
+          DB_NAME: lpk_ci
+        run: python backend/check_student_seed.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --legacy-peer-deps
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+        env:
+          REACT_APP_BACKEND_URL: https://lpk.techworksnesia.com
+          REACT_APP_DEMO: '0'
+          GENERATE_SOURCEMAP: 'false'
+      - name: Package application
+        run: |
+          mkdir -p release/backend release/frontend
+          rsync -a --exclude .env --exclude .venv --exclude __pycache__ --exclude storage --exclude tests backend/ release/backend/
+          cp -a frontend/build/. release/frontend/
+          tar -czf release.tar.gz -C release backend frontend
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lpk-release
+          path: release.tar.gz
+          retention-days: 1
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: lpk-release
+      - name: Deploy and seed student accounts
+        env:
+          DEPLOY_KEY: ${{ secrets.LPK_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.LPK_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/lpk
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/lpk ~/.ssh/known_hosts
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -i ~/.ssh/lpk -p 2222 ubuntu@43.156.77.106 < release.tar.gz
+      - name: Check public HTTPS
+        run: |
+          curl --fail --retry 3 https://lpk.techworksnesia.com/ -o /dev/null
+          curl --fail --retry 3 https://lpk.techworksnesia.com/api/
